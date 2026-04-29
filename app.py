@@ -271,8 +271,8 @@ if 'scan_results' in st.session_state:
     with st.expander(f"📋 全銘柄一覧（{total_stocks}銘柄）"):
         cols = ["銘柄名","コード","日足","1時間足","5分足","強度","RSI(日)","ADX(日)"]
         cols = [c for c in cols if c in df_all.columns]
-        st.dataframe(df_all[cols].sort_values('一致数',ascending=False).reset_index(drop=True),
-                     use_container_width=True, hide_index=True)
+        df_sorted = df_all.sort_values('一致数', ascending=False).reset_index(drop=True)
+        st.dataframe(df_sorted[cols], use_container_width=True, hide_index=True)
 
     st.caption("⚠️ 参考情報のみです。投資判断はご自身の責任でお願いします。")
 
