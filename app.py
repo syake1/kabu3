@@ -7,7 +7,7 @@ import os
 
 st.set_page_config(
     page_title="kabu3 - マルチTFスキャナー",
-    page_icon="🔍",
+    page_icon="📡",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -16,35 +16,137 @@ st.markdown("""
 <style>
 #MainMenu, footer, header { visibility: hidden; }
 footer { display: none !important; }
-.block-container { padding: 10px 12px 20px 12px !important; max-width: 100% !important; }
-.stButton > button { min-height: 50px; font-size: 15px; border-radius: 10px; width: 100%; font-weight: bold; }
-[data-testid="stMetric"] { background: #111827; border-radius: 10px; padding: 10px 8px; border: 1px solid #1e293b; text-align: center; }
-[data-testid="stMetricValue"] { font-size: 1.5rem !important; }
+.block-container { padding: 8px 10px 20px 10px !important; max-width: 100% !important; }
+.stButton > button { min-height: 48px; font-size: 15px; border-radius: 10px; font-weight: bold; }
+[data-testid="stMetric"] {
+    background: #111827; border-radius: 10px;
+    padding: 10px 8px; border: 1px solid #1e293b; text-align: center;
+}
+[data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+[data-testid="stMetricLabel"] { font-size: 0.72rem !important; }
+[data-testid="stTabs"] [role="tab"] { font-size: 13px; padding: 6px 10px; }
 [data-testid="stSlider"] input[type="range"]::-webkit-slider-thumb { width: 26px; height: 26px; }
 @media (max-width: 600px) {
-    [data-testid="stSidebar"] { width: 85vw !important; }
-    .block-container { padding: 8px !important; }
+    [data-testid="stSidebar"] { width: 88vw !important; }
+    .block-container { padding: 6px !important; }
+    [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
 }
+
+/* PWAインストールボタン */
+#pwa-install-btn {
+    display: none;
+    position: fixed;
+    bottom: 18px; right: 18px;
+    background: #00d4aa; color: #0a0e1a;
+    border: none; border-radius: 50px;
+    padding: 12px 20px; font-size: 14px; font-weight: bold;
+    cursor: pointer; box-shadow: 0 4px 16px rgba(0,212,170,0.4);
+    z-index: 9999;
+}
+#pwa-install-btn.visible { display: block; }
 </style>
+
+<!-- PWA manifest -->
+<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoia2FidTMg77yN44Oe44Or44OBVEbjgrnjm-HYCS3jg8Cjg7zjg4Pjg4kryYrjgL3jgYTjgb7jgZkiLCJzaG9ydF9uYW1lIjoia2FidTMiLCJzdGFydF91cmwiOiIuIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiIzBhMGUxYSIsInRoZW1lX2NvbG9yIjoiIzAwZDRhYSIsImljb25zIjpbeyJzcmMiOiJodHRwczovL3JhdC5jZG5qcy5jbG91ZGZsYXJlLmNvbS9hamF4L2xpYnMvdHdlbW9qaS8xNC4wLjIvc3ZnLzFmNGUxLnN2ZyIsInNpemVzIjoiYW55IiwidHlwZSI6ImltYWdlL3N2Zyt4bWwifV19">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="kabu3">
+<meta name="theme-color" content="#00d4aa">
+
+<button id="pwa-install-btn" onclick="installPWA()">📲 ホーム画面に追加</button>
+
+<script>
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    document.getElementById('pwa-install-btn').classList.add('visible');
+});
+function installPWA() {
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(() => {
+            deferredPrompt = null;
+            document.getElementById('pwa-install-btn').classList.remove('visible');
+        });
+    } else {
+        alert('ホーム画面への追加方法:\\n\\niPhone/iPad: Safariで開き、下の共有ボタン →「ホーム画面に追加」\\n\\nAndroid: Chromeで開き、メニュー（⋮） → 「ホーム画面に追加」');
+    }
+}
+// iOSは beforeinstallprompt が発火しないので常にボタン表示
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+if (isIOS) {
+    document.getElementById('pwa-install-btn').classList.add('visible');
+}
+</script>
 """, unsafe_allow_html=True)
 
+
+# ── tickers.json 読み込み ─────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 TICKER_FILE = os.path.join(BASE_DIR, "kabu3_tickers.json")
 
+DEFAULT_TICKERS = {
+    "半導体": {
+        "東京エレクトロン": "8035.T",
+        "アドバンテスト":   "6857.T",
+        "レーザーテック":   "6920.T",
+        "ソシオネクスト":   "6526.T",
+    },
+    "電機・精密": {
+        "ソニーグループ":   "6758.T",
+        "キーエンス":       "6861.T",
+        "日立製作所":       "6501.T",
+        "ファナック":       "6954.T",
+    },
+    "自動車": {
+        "トヨタ自動車":     "7203.T",
+        "ホンダ":           "7267.T",
+        "デンソー":         "6902.T",
+    },
+    "金融": {
+        "三菱UFJ":          "8306.T",
+        "三井住友FG":       "8316.T",
+        "みずほFG":         "8411.T",
+    },
+    "通信・IT": {
+        "ソフトバンクG":    "9984.T",
+        "NTT":              "9432.T",
+        "KDDI":             "9433.T",
+    },
+    "商社・サービス": {
+        "三菱商事":         "8058.T",
+        "リクルートHD":     "6098.T",
+        "エムスリー":       "2413.T",
+    },
+    "為替": {
+        "USDJPY":           "USDJPY=X",
+        "EURJPY":           "EURJPY=X",
+    },
+}
+
 if os.path.exists(TICKER_FILE):
     with open(TICKER_FILE, "r", encoding="utf-8") as f:
-        global_tickers = json.load(f)
+        file_tickers = json.load(f)
 else:
-    global_tickers = {
-        "半導体": {"東京エレクトロン": "8035.T", "アドバンテスト": "6857.T", "レーザーテック": "6920.T"},
-        "電機・精密": {"ソニーグループ": "6758.T", "キーエンス": "6861.T", "日立製作所": "6501.T"},
-        "自動車": {"トヨタ自動車": "7203.T", "ホンダ": "7267.T"},
-        "金融": {"三菱UFJ": "8306.T", "三井住友FG": "8316.T", "みずほFG": "8411.T"},
-        "通信・IT": {"ソフトバンクG": "9984.T", "NTT": "9432.T", "KDDI": "9433.T"},
-        "商社・サービス": {"三菱商事": "8058.T", "リクルートHD": "6098.T"},
-        "為替": {"USDJPY": "USDJPY=X", "EURJPY": "EURJPY=X"},
-    }
+    file_tickers = DEFAULT_TICKERS
 
+# session_state で銘柄を管理（追加・削除に対応）
+if 'tickers' not in st.session_state:
+    st.session_state['tickers'] = file_tickers
+
+
+def save_tickers():
+    """銘柄リストをJSONに保存"""
+    try:
+        with open(TICKER_FILE, "w", encoding="utf-8") as f:
+            json.dump(st.session_state['tickers'], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # Streamlit Cloud では書き込めない場合があるが session_state で保持
+
+
+# ── 指標計算 ──────────────────────────────────────────────────
 def calculate_indicators(df, bb_std=2.0):
     c = df['Close']
     for w in [5, 25, 75]:
@@ -79,6 +181,7 @@ def calculate_indicators(df, bb_std=2.0):
     dx  = 100 * (df['Plus_DI'] - df['Minus_DI']).abs() / (df['Plus_DI'] + df['Minus_DI'])
     df['ADX'] = dx.ewm(alpha=1/14, adjust=False).mean()
     return df
+
 
 def detect_signals(df, rsi_ob=70, rsi_os=30, sensitivity="標準",
                    trend_filter=True, dmi_filter=False, bb_std=2.0):
@@ -120,6 +223,7 @@ def detect_signals(df, rsi_ob=70, rsi_os=30, sensitivity="標準",
                ~macd_gc & macd_dn, 'Sell_Signal'] = True
     return df
 
+
 @st.cache_data(ttl=180)
 def load_data(ticker, period, interval):
     try:
@@ -136,6 +240,7 @@ def load_data(ticker, period, interval):
     except Exception:
         return pd.DataFrame()
 
+
 def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std):
     df = load_data(code, period, tf)
     if df.empty or len(df) < 50:
@@ -151,18 +256,20 @@ def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_fi
     if last['Sell_Signal']: return "🔴", rsi_val, stoch_val, adx_val
     return "➖", rsi_val, stoch_val, adx_val
 
+
 TF_CONFIG = {
     "日足":    {"tf": "1d", "period": "1y"},
     "1時間足": {"tf": "1h", "period": "3mo"},
     "5分足":   {"tf": "5m", "period": "5d"},
 }
 
-# ── UI ────────────────────────────────────────────────────────
+# ── タイトル ──────────────────────────────────────────────────
 st.title("📡 kabu3 — マルチTFスキャナー")
-st.caption("日足・1時間足・5分足を同時スキャンして買い銘柄を抽出します")
+st.caption("日足・1時間足・5分足を同時スキャンして買い銘柄を抽出")
 
+# ── サイドバー（スキャン設定） ────────────────────────────────
 with st.sidebar:
-    st.header("スキャン設定")
+    st.header("⚙️ スキャン設定")
     sensitivity  = st.radio("シグナル感度", ["標準", "敏感"], horizontal=True)
     trend_filter = st.checkbox("順張りフィルター（上昇トレンドのみ買い）", value=True)
     dmi_filter   = st.checkbox("DMIフィルター（ADX > 20）", value=False)
@@ -171,110 +278,284 @@ with st.sidebar:
     rsi_os = st.slider("RSI 売られすぎ", 10, 40, 30, 5)
     bb_std = st.slider("ボリンジャーバンド σ", 1.0, 3.0, 2.0, 0.1)
     st.divider()
-    selected_sectors = st.multiselect("セクター絞り込み（空=全部）", list(global_tickers.keys()))
+    all_sectors      = list(st.session_state['tickers'].keys())
+    selected_sectors = st.multiselect("セクター絞り込み（空=全部）", all_sectors)
 
+# スキャン対象確定
 if selected_sectors:
-    target_tickers = {n: c for sec in selected_sectors for n, c in global_tickers[sec].items()}
+    target_tickers = {n: c for sec in selected_sectors
+                      for n, c in st.session_state['tickers'][sec].items()}
 else:
-    target_tickers = {n: c for sec in global_tickers.values() for n, c in sec.items()}
+    target_tickers = {n: c for sec in st.session_state['tickers'].values()
+                      for n, c in sec.items()}
 
 total_stocks = len(target_tickers)
 
-col1, col2 = st.columns(2)
-col1.metric("対象銘柄数",   f"{total_stocks} 銘柄")
-col2.metric("スキャンTF数", "3（日足・1h・5分）")
-st.divider()
+# ── メインタブ ─────────────────────────────────────────────────
+tab_scan, tab_result, tab_manage, tab_howto = st.tabs([
+    "🔍 スキャン", "📊 結果詳細", "➕ 銘柄管理", "📲 使い方"
+])
 
-if st.button("🔍 スキャン開始", use_container_width=True):
-    st.session_state.pop('scan_results', None)
-    results      = []
-    progress_bar = st.progress(0, text="スキャン準備中...")
-    status_box   = st.empty()
 
-    for i, (name, code) in enumerate(target_tickers.items()):
-        status_box.info(f"スキャン中... {name} ({code})  [{i+1}/{total_stocks}]")
-        row = {"銘柄名": name, "コード": code}
-        for tf_label, cfg in TF_CONFIG.items():
-            sig, rsi_v, stoch_v, adx_v = scan_one(
-                code, cfg["tf"], cfg["period"],
-                rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std)
-            row[tf_label] = sig
-            if tf_label == "日足":
-                row["RSI(日)"] = rsi_v
-                row["Stoch(日)"] = stoch_v
-                row["ADX(日)"] = adx_v
-        buy_count    = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
-        row["一致数"] = buy_count
-        row["強度"]   = ("★★★ 超強力" if buy_count == 3 else
-                         "★★☆ 中程度" if buy_count == 2 else
-                         "★☆☆ 弱い"  if buy_count == 1 else "－")
-        results.append(row)
-        progress_bar.progress((i + 1) / total_stocks, text=f"スキャン中... {i+1}/{total_stocks}")
+# ═══════════════════════════════════════════════════════
+# タブ1: スキャン
+# ═══════════════════════════════════════════════════════
+with tab_scan:
+    c1, c2 = st.columns(2)
+    c1.metric("対象銘柄数",   f"{total_stocks} 銘柄")
+    c2.metric("スキャンTF数", "3（日足・1h・5分）")
 
-    progress_bar.progress(1.0, text="完了！")
-    status_box.success(f"スキャン完了！{total_stocks}銘柄 × 3TF を解析しました。")
-    st.session_state['scan_results'] = results
+    if st.button("🔍 スキャン開始", use_container_width=True, key="scan_btn"):
+        st.session_state.pop('scan_results', None)
+        results      = []
+        progress_bar = st.progress(0, text="スキャン準備中...")
+        status_box   = st.empty()
 
-if 'scan_results' in st.session_state:
-    results = st.session_state['scan_results']
-    df_all  = pd.DataFrame(results)
-    buy_df  = df_all[df_all['一致数'] > 0].sort_values('一致数', ascending=False)
-    str3    = buy_df[buy_df['一致数'] == 3]
-    str2    = buy_df[buy_df['一致数'] == 2]
-    str1    = buy_df[buy_df['一致数'] == 1]
+        for i, (name, code) in enumerate(target_tickers.items()):
+            status_box.info(f"⏳ {name} ({code})  [{i+1}/{total_stocks}]")
+            row = {"銘柄名": name, "コード": code}
+            for tf_label, cfg in TF_CONFIG.items():
+                sig, rsi_v, stoch_v, adx_v = scan_one(
+                    code, cfg["tf"], cfg["period"],
+                    rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std)
+                row[tf_label]   = sig
+                row[f"RSI({tf_label})"]   = rsi_v
+                row[f"Stoch({tf_label})"] = stoch_v
+                row[f"ADX({tf_label})"]   = adx_v
+            buy_count    = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
+            row["一致数"] = buy_count
+            row["強度"]   = ("★★★" if buy_count == 3 else
+                             "★★☆" if buy_count == 2 else
+                             "★☆☆" if buy_count == 1 else "－")
+            results.append(row)
+            progress_bar.progress((i + 1) / total_stocks,
+                                   text=f"スキャン中... {i+1}/{total_stocks}")
 
-    st.subheader("📊 スキャン結果")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("★★★ 3TF一致", f"{len(str3)} 銘柄")
-    m2.metric("★★☆ 2TF一致", f"{len(str2)} 銘柄")
-    m3.metric("★☆☆ 1TFのみ", f"{len(str1)} 銘柄")
-    m4.metric("合計",          f"{total_stocks} 銘柄")
-    st.divider()
+        progress_bar.progress(1.0, text="✅ 完了！")
+        status_box.success(f"✅ {total_stocks}銘柄 × 3TF スキャン完了！")
+        st.session_state['scan_results'] = results
 
-    st.subheader("🏆 3TF全一致 — 最注目銘柄")
-    if str3.empty:
-        st.info("現在、3TF全一致の銘柄はありません。")
+    # スキャン済みなら簡易サマリーだけ表示
+    if 'scan_results' in st.session_state:
+        results = st.session_state['scan_results']
+        df_all  = pd.DataFrame(results)
+        buy_df  = df_all[df_all['一致数'] > 0]
+        str3 = buy_df[buy_df['一致数'] == 3]
+        str2 = buy_df[buy_df['一致数'] == 2]
+        str1 = buy_df[buy_df['一致数'] == 1]
+
+        st.divider()
+        st.subheader("📊 スキャン結果サマリー")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("★★★ 3TF",  f"{len(str3)}銘柄")
+        m2.metric("★★☆ 2TF",  f"{len(str2)}銘柄")
+        m3.metric("★☆☆ 1TF",  f"{len(str1)}銘柄")
+        m4.metric("対象合計",   f"{total_stocks}銘柄")
+
+        st.info("👉 「結果詳細」タブで時間足別・銘柄別に詳しく確認できます。")
+
+
+# ═══════════════════════════════════════════════════════
+# タブ2: 結果詳細
+# ═══════════════════════════════════════════════════════
+with tab_result:
+    if 'scan_results' not in st.session_state:
+        st.info("先に「スキャン」タブでスキャンを実行してください。")
     else:
-        for _, row in str3.iterrows():
-            with st.container(border=True):
-                ca, cb = st.columns([3, 1])
-                ca.markdown(f"**{row['銘柄名']}** `{row['コード']}`")
-                ca.write(f"日足 {row['日足']}  1時間足 {row['1時間足']}  5分足 {row['5分足']}")
-                cb.markdown("### ★★★")
-                st.caption(f"RSI(日): {row.get('RSI(日)','N/A')}　"
-                           f"Stoch(日): {row.get('Stoch(日)','N/A')}　"
-                           f"ADX(日): {row.get('ADX(日)','N/A')}")
+        results = st.session_state['scan_results']
+        df_all  = pd.DataFrame(results)
+        buy_df  = df_all[df_all['一致数'] > 0].sort_values('一致数', ascending=False)
+        str3    = buy_df[buy_df['一致数'] == 3]
+        str2    = buy_df[buy_df['一致数'] == 2]
+        str1    = buy_df[buy_df['一致数'] == 1]
+
+        # ── サブタブで時間足別・強度別に分ける
+        sub_all, sub_tf_1d, sub_tf_1h, sub_tf_5m, sub_strong = st.tabs([
+            "🗒 全銘柄", "📅 日足買い", "⏱ 1h買い", "⚡ 5分買い", "🏆 複数TF一致"
+        ])
+
+        SHOW_COLS_BASE = ["銘柄名", "コード", "日足", "1時間足", "5分足", "強度"]
+
+        def safe_df(df, extra_cols=[]):
+            cols = SHOW_COLS_BASE + extra_cols
+            cols = [c for c in cols if c in df.columns]
+            return df[cols].reset_index(drop=True)
+
+        # 全銘柄
+        with sub_all:
+            st.subheader(f"全銘柄一覧 （{len(df_all)}銘柄）")
+            sort_df = df_all.sort_values('一致数', ascending=False).reset_index(drop=True)
+            show = safe_df(sort_df, ["RSI(日足)", "ADX(日足)"])
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+        # 日足買い
+        with sub_tf_1d:
+            df_1d = df_all[df_all['日足'] == "🟢"].sort_values('一致数', ascending=False)
+            st.subheader(f"日足で買いシグナル （{len(df_1d)}銘柄）")
+            if df_1d.empty:
+                st.info("現在、日足で買いシグナルの銘柄はありません。")
+            else:
+                show = safe_df(df_1d, ["RSI(日足)", "Stoch(日足)", "ADX(日足)"])
+                st.dataframe(show, use_container_width=True, hide_index=True)
+
+        # 1時間足買い
+        with sub_tf_1h:
+            df_1h = df_all[df_all['1時間足'] == "🟢"].sort_values('一致数', ascending=False)
+            st.subheader(f"1時間足で買いシグナル （{len(df_1h)}銘柄）")
+            if df_1h.empty:
+                st.info("現在、1時間足で買いシグナルの銘柄はありません。")
+            else:
+                show = safe_df(df_1h, ["RSI(1時間足)", "Stoch(1時間足)", "ADX(1時間足)"])
+                st.dataframe(show, use_container_width=True, hide_index=True)
+
+        # 5分足買い
+        with sub_tf_5m:
+            df_5m = df_all[df_all['5分足'] == "🟢"].sort_values('一致数', ascending=False)
+            st.subheader(f"5分足で買いシグナル （{len(df_5m)}銘柄）")
+            if df_5m.empty:
+                st.info("現在、5分足で買いシグナルの銘柄はありません。")
+            else:
+                show = safe_df(df_5m, ["RSI(5分足)", "Stoch(5分足)", "ADX(5分足)"])
+                st.dataframe(show, use_container_width=True, hide_index=True)
+
+        # 複数TF一致
+        with sub_strong:
+            st.subheader("🏆 3TF全一致 — 最注目銘柄")
+            if str3.empty:
+                st.info("現在、3TF全一致の銘柄はありません。")
+            else:
+                for _, row in str3.iterrows():
+                    with st.container(border=True):
+                        ca, cb = st.columns([3, 1])
+                        ca.markdown(f"**{row['銘柄名']}** `{row['コード']}`")
+                        ca.write(f"日足 {row['日足']}　1時間足 {row['1時間足']}　5分足 {row['5分足']}")
+                        cb.markdown("### ★★★")
+                        st.caption(
+                            f"RSI(日): {row.get('RSI(日足)','N/A')}　"
+                            f"Stoch(日): {row.get('Stoch(日足)','N/A')}　"
+                            f"ADX(日): {row.get('ADX(日足)','N/A')}"
+                        )
+
+            st.divider()
+            st.subheader("🔶 2TF一致 — 注目銘柄")
+            if str2.empty:
+                st.info("現在、2TF一致の銘柄はありません。")
+            else:
+                for _, row in str2.iterrows():
+                    tfs = [tfl for tfl in TF_CONFIG if row[tfl] == "🟢"]
+                    with st.container(border=True):
+                        ca, cb = st.columns([3, 1])
+                        ca.markdown(f"**{row['銘柄名']}** `{row['コード']}`")
+                        ca.write(f"日足 {row['日足']}　1時間足 {row['1時間足']}　5分足 {row['5分足']}")
+                        cb.markdown("### ★★☆")
+                        st.caption(f"買い一致: {'・'.join(tfs)}")
+
+            st.divider()
+            if not str1.empty:
+                with st.expander(f"★☆☆ 1TFのみ — {len(str1)}銘柄"):
+                    show = safe_df(str1, ["RSI(日足)", "ADX(日足)"])
+                    st.dataframe(show, use_container_width=True, hide_index=True)
+
+        st.caption("⚠️ 参考情報のみです。投資判断はご自身の責任でお願いします。")
+
+
+# ═══════════════════════════════════════════════════════
+# タブ3: 銘柄管理
+# ═══════════════════════════════════════════════════════
+with tab_manage:
+    st.subheader("➕ 銘柄を追加する")
+
+    with st.form("add_ticker_form", clear_on_submit=True):
+        col_a, col_b, col_c = st.columns([2, 2, 2])
+        new_name   = col_a.text_input("銘柄名", placeholder="例: 信越化学")
+        new_code   = col_b.text_input("銘柄コード", placeholder="例: 4063.T")
+        new_sector = col_c.text_input("セクター", placeholder="例: 化学")
+        submitted  = st.form_submit_button("✅ 追加する", use_container_width=True)
+
+        if submitted:
+            if new_name and new_code:
+                sector = new_sector.strip() if new_sector.strip() else "その他"
+                if sector not in st.session_state['tickers']:
+                    st.session_state['tickers'][sector] = {}
+                st.session_state['tickers'][sector][new_name.strip()] = new_code.strip().upper()
+                save_tickers()
+                st.success(f"✅ 「{new_name}（{new_code}）」を {sector} セクターに追加しました！")
+                st.rerun()
+            else:
+                st.error("銘柄名とコードは必須です。")
+
     st.divider()
+    st.subheader("📋 登録銘柄一覧・削除")
+    st.caption("銘柄コードはYahoo Finance形式（日本株: 1234.T、為替: USDJPY=X）")
 
-    st.subheader("🔶 2TF一致 — 注目銘柄")
-    if str2.empty:
-        st.info("現在、2TF一致の銘柄はありません。")
-    else:
-        for _, row in str2.iterrows():
-            tfs = [tfl for tfl in TF_CONFIG if row[tfl] == "🟢"]
-            with st.container(border=True):
-                ca, cb = st.columns([3, 1])
-                ca.markdown(f"**{row['銘柄名']}** `{row['コード']}`")
-                ca.write(f"日足 {row['日足']}  1時間足 {row['1時間足']}  5分足 {row['5分足']}")
-                cb.markdown("### ★★☆")
-                st.caption(f"買い一致: {'・'.join(tfs)}　RSI(日): {row.get('RSI(日)','N/A')}　ADX(日): {row.get('ADX(日)','N/A')}")
+    for sector, ticker_dict in list(st.session_state['tickers'].items()):
+        with st.expander(f"📂 {sector}（{len(ticker_dict)}銘柄）"):
+            for t_name, t_code in list(ticker_dict.items()):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                col1.write(t_name)
+                col2.code(t_code)
+                if col3.button("🗑", key=f"del_{sector}_{t_name}"):
+                    del st.session_state['tickers'][sector][t_name]
+                    if not st.session_state['tickers'][sector]:
+                        del st.session_state['tickers'][sector]
+                    save_tickers()
+                    st.rerun()
+
     st.divider()
+    if st.button("🔄 デフォルト銘柄リストに戻す", use_container_width=True):
+        st.session_state['tickers'] = DEFAULT_TICKERS
+        save_tickers()
+        st.success("デフォルトの銘柄リストに戻しました。")
+        st.rerun()
 
-    with st.expander(f"★☆☆ 1TFのみ — {len(str1)}銘柄"):
-        if str1.empty:
-            st.info("該当なし")
-        else:
-            cols = ["銘柄名","コード","日足","1時間足","5分足","RSI(日)","ADX(日)"]
-            cols = [c for c in cols if c in str1.columns]
-            st.dataframe(str1[cols].reset_index(drop=True), use_container_width=True, hide_index=True)
 
-    with st.expander(f"📋 全銘柄一覧（{total_stocks}銘柄）"):
-        cols = ["銘柄名","コード","日足","1時間足","5分足","強度","RSI(日)","ADX(日)"]
-        cols = [c for c in cols if c in df_all.columns]
-        df_sorted = df_all.sort_values('一致数', ascending=False).reset_index(drop=True)
-        st.dataframe(df_sorted[cols], use_container_width=True, hide_index=True)
+# ═══════════════════════════════════════════════════════
+# タブ4: 使い方・ホーム画面追加
+# ═══════════════════════════════════════════════════════
+with tab_howto:
+    st.subheader("📲 ホーム画面に追加する方法")
 
-    st.caption("⚠️ 参考情報のみです。投資判断はご自身の責任でお願いします。")
+    st.info("ホーム画面に追加すると、アプリのようにすぐ起動できます！")
 
-else:
-    st.info("「スキャン開始」を押すと、登録銘柄を日足・1時間足・5分足の3TFで同時スキャンします。")
+    with st.expander("🍎 iPhone / iPad (Safari)", expanded=True):
+        st.markdown("""
+1. **Safariで**このページを開く（Chromeでは不可）
+2. 画面下の **「共有」ボタン**（□↑）をタップ
+3. **「ホーム画面に追加」** をタップ
+4. 名前を確認して **「追加」** をタップ
+""")
+
+    with st.expander("🤖 Android (Chrome)"):
+        st.markdown("""
+1. **Chromeで**このページを開く
+2. 右上の **メニュー（⋮）** をタップ
+3. **「ホーム画面に追加」** または **「アプリをインストール」** をタップ
+4. **「追加」** をタップ
+""")
+
+    st.divider()
+    st.subheader("📖 使い方")
+    st.markdown("""
+**① スキャンタブ**
+- 「スキャン開始」ボタンを押すだけで全登録銘柄を自動分析
+- サイドバーで感度・フィルターを調整可能
+
+**② 結果詳細タブ**
+- 「全銘柄」：全銘柄の結果一覧
+- 「日足買い」：日足でシグナルが出た銘柄
+- 「1h買い」：1時間足でシグナルが出た銘柄
+- 「5分買い」：5分足でシグナルが出た銘柄
+- 「複数TF一致」：★★★（3つ一致）など強い銘柄を強調表示
+
+**③ 銘柄管理タブ**
+- 銘柄の追加・削除が自由にできます
+- コード形式：日本株 `1234.T`、為替 `USDJPY=X`
+
+**④ シグナルの見方**
+- 🟢 買いシグナル点灯中
+- 🔴 売りシグナル点灯中
+- ➖ シグナルなし（様子見）
+- ★★★ 日足・1h・5分すべてで買い → 最も強い買いサイン
+""")
+
+    st.caption("⚠️ このアプリは参考情報のみです。投資判断はご自身の責任でお願いします。")
