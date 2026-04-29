@@ -369,9 +369,59 @@ with tab_result:
         str2    = buy_df[buy_df['一致数'] == 2]
         str1    = buy_df[buy_df['一致数'] == 1]
 
-        # ── サブタブで時間足別・強度別に分ける
+        def signal_cards(tf_col, tf_key):
+            """買い・売り銘柄を2カラムで並べて表示"""
+            buy_rows  = df_all[df_all[tf_col] == "🟢"].sort_values('一致数', ascending=False)
+            sell_rows = df_all[df_all[tf_col] == "🔴"].sort_values('一致数', ascending=False)
+            wait_rows = df_all[df_all[tf_col] == "➖"]
+
+            # カウント行
+            ca, cb, cc = st.columns(3)
+            ca.metric("🟢 買いシグナル", f"{len(buy_rows)} 銘柄")
+            cb.metric("🔴 売りシグナル", f"{len(sell_rows)} 銘柄")
+            cc.metric("➖ 様子見",       f"{len(wait_rows)} 銘柄")
+            st.divider()
+
+            # 買い・売りを横並びで表示
+            col_buy, col_sell = st.columns(2)
+
+            with col_buy:
+                st.markdown("### 🟢 買い銘柄")
+                if buy_rows.empty:
+                    st.info("現在なし")
+                else:
+                    for _, row in buy_rows.iterrows():
+                        with st.container(border=True):
+                            st.markdown(f"**{row['銘柄名']}**")
+                            st.caption(f"`{row['コード']}`　強度: {row['強度']}")
+                            rsi   = row.get(f"RSI({tf_key})",   "N/A")
+                            stoch = row.get(f"Stoch({tf_key})", "N/A")
+                            adx   = row.get(f"ADX({tf_key})",   "N/A")
+                            st.caption(f"RSI {rsi}　Stoch {stoch}　ADX {adx}")
+
+            with col_sell:
+                st.markdown("### 🔴 売り銘柄")
+                if sell_rows.empty:
+                    st.info("現在なし")
+                else:
+                    for _, row in sell_rows.iterrows():
+                        with st.container(border=True):
+                            st.markdown(f"**{row['銘柄名']}**")
+                            st.caption(f"`{row['コード']}`")
+                            rsi   = row.get(f"RSI({tf_key})",   "N/A")
+                            stoch = row.get(f"Stoch({tf_key})", "N/A")
+                            adx   = row.get(f"ADX({tf_key})",   "N/A")
+                            st.caption(f"RSI {rsi}　Stoch {stoch}　ADX {adx}")
+
+            # 様子見は折りたたみ
+            if not wait_rows.empty:
+                with st.expander(f"➖ 様子見 {len(wait_rows)}銘柄"):
+                    names = "　".join(wait_rows['銘柄名'].tolist())
+                    st.write(names)
+
+        # ── サブタブ
         sub_all, sub_tf_1d, sub_tf_1h, sub_tf_5m, sub_strong = st.tabs([
-            "🗒 全銘柄", "📅 日足買い", "⏱ 1h買い", "⚡ 5分買い", "🏆 複数TF一致"
+            "🗒 全銘柄", "📅 日足", "⏱ 1時間足", "⚡ 5分足", "🏆 複数TF一致"
         ])
 
         SHOW_COLS_BASE = ["銘柄名", "コード", "日足", "1時間足", "5分足", "強度"]
@@ -388,35 +438,20 @@ with tab_result:
             show = safe_df(sort_df, ["RSI(日足)", "ADX(日足)"])
             st.dataframe(show, use_container_width=True, hide_index=True)
 
-        # 日足買い
+        # 日足
         with sub_tf_1d:
-            df_1d = df_all[df_all['日足'] == "🟢"].sort_values('一致数', ascending=False)
-            st.subheader(f"日足で買いシグナル （{len(df_1d)}銘柄）")
-            if df_1d.empty:
-                st.info("現在、日足で買いシグナルの銘柄はありません。")
-            else:
-                show = safe_df(df_1d, ["RSI(日足)", "Stoch(日足)", "ADX(日足)"])
-                st.dataframe(show, use_container_width=True, hide_index=True)
+            st.subheader("📅 日足 — 買い・売り銘柄")
+            signal_cards("日足", "日足")
 
-        # 1時間足買い
+        # 1時間足
         with sub_tf_1h:
-            df_1h = df_all[df_all['1時間足'] == "🟢"].sort_values('一致数', ascending=False)
-            st.subheader(f"1時間足で買いシグナル （{len(df_1h)}銘柄）")
-            if df_1h.empty:
-                st.info("現在、1時間足で買いシグナルの銘柄はありません。")
-            else:
-                show = safe_df(df_1h, ["RSI(1時間足)", "Stoch(1時間足)", "ADX(1時間足)"])
-                st.dataframe(show, use_container_width=True, hide_index=True)
+            st.subheader("⏱ 1時間足 — 買い・売り銘柄")
+            signal_cards("1時間足", "1時間足")
 
-        # 5分足買い
+        # 5分足
         with sub_tf_5m:
-            df_5m = df_all[df_all['5分足'] == "🟢"].sort_values('一致数', ascending=False)
-            st.subheader(f"5分足で買いシグナル （{len(df_5m)}銘柄）")
-            if df_5m.empty:
-                st.info("現在、5分足で買いシグナルの銘柄はありません。")
-            else:
-                show = safe_df(df_5m, ["RSI(5分足)", "Stoch(5分足)", "ADX(5分足)"])
-                st.dataframe(show, use_container_width=True, hide_index=True)
+            st.subheader("⚡ 5分足 — 買い・売り銘柄")
+            signal_cards("5分足", "5分足")
 
         # 複数TF一致
         with sub_strong:
