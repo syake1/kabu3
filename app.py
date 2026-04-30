@@ -32,52 +32,71 @@ footer { display: none !important; }
     [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
 }
 
-/* PWAインストールボタン */
-#pwa-install-btn {
-    display: none;
+/* ホーム画面追加バナー — body直下の固定要素としてStreamlitの再描画に左右されない */
+#pwa-bar {
     position: fixed;
-    bottom: 18px; right: 18px;
-    background: #00d4aa; color: #0a0e1a;
-    border: none; border-radius: 50px;
-    padding: 12px 20px; font-size: 14px; font-weight: bold;
-    cursor: pointer; box-shadow: 0 4px 16px rgba(0,212,170,0.4);
-    z-index: 9999;
+    bottom: 0; left: 0; right: 0;
+    background: #0a0e1a;
+    border-top: 1px solid rgba(0,212,170,0.3);
+    padding: 10px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    z-index: 99999;
+    font-family: sans-serif;
 }
-#pwa-install-btn.visible { display: block; }
+#pwa-bar span { color: #94a3b8; font-size: 13px; }
+#pwa-bar button {
+    background: #00d4aa; color: #0a0e1a;
+    border: none; border-radius: 20px;
+    padding: 8px 18px; font-size: 13px; font-weight: bold;
+    cursor: pointer;
+}
+#pwa-bar .pwa-close {
+    background: none; color: #94a3b8;
+    border: none; font-size: 18px; cursor: pointer;
+    padding: 4px 8px; border-radius: 6px;
+}
 </style>
 
-<!-- PWA manifest -->
-<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoia2FidTMg77yN44Oe44Or44OBVEbjgrnjm-HYCS3jg8Cjg7zjg4Pjg4kryYrjgL3jgYTjgb7jgZkiLCJzaG9ydF9uYW1lIjoia2FidTMiLCJzdGFydF91cmwiOiIuIiwiZGlzcGxheSI6InN0YW5kYWxvbmUiLCJiYWNrZ3JvdW5kX2NvbG9yIjoiIzBhMGUxYSIsInRoZW1lX2NvbG9yIjoiIzAwZDRhYSIsImljb25zIjpbeyJzcmMiOiJodHRwczovL3JhdC5jZG5qcy5jbG91ZGZsYXJlLmNvbS9hamF4L2xpYnMvdHdlbW9qaS8xNC4wLjIvc3ZnLzFmNGUxLnN2ZyIsInNpemVzIjoiYW55IiwidHlwZSI6ImltYWdlL3N2Zyt4bWwifV19">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="kabu3">
 <meta name="theme-color" content="#00d4aa">
 
-<button id="pwa-install-btn" onclick="installPWA()">📲 ホーム画面に追加</button>
+<!-- ホーム画面追加バナー（固定・消えない） -->
+<div id="pwa-bar">
+  <span>📲 ホーム画面に追加できます</span>
+  <button onclick="installPWA()">追加する</button>
+  <button class="pwa-close" onclick="document.getElementById('pwa-bar').style.display='none'">✕</button>
+</div>
 
 <script>
+// Streamlitは描画のたびにiframeを操作するが、
+// pwa-barはbody直下の固定要素なので消えない
 let deferredPrompt = null;
+
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
-    document.getElementById('pwa-install-btn').classList.add('visible');
 });
+
 function installPWA() {
     if (deferredPrompt) {
+        // Android Chrome: ネイティブインストールダイアログ
         deferredPrompt.prompt();
         deferredPrompt.userChoice.then(() => {
             deferredPrompt = null;
-            document.getElementById('pwa-install-btn').classList.remove('visible');
+            document.getElementById('pwa-bar').style.display = 'none';
         });
     } else {
-        alert('ホーム画面への追加方法:\\n\\niPhone/iPad: Safariで開き、下の共有ボタン →「ホーム画面に追加」\\n\\nAndroid: Chromeで開き、メニュー（⋮） → 「ホーム画面に追加」');
+        // iOS Safari / その他: 手順をアラートで案内
+        const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+        if (isIOS) {
+            alert('📲 ホーム画面への追加方法（iPhone/iPad）\n\n① このページをSafariで開く\n② 画面下の「共有」ボタン（□↑）をタップ\n③「ホーム画面に追加」をタップ\n④「追加」をタップ');
+        } else {
+            alert('📲 ホーム画面への追加方法（Android）\n\n① Chromeで開く\n② 右上メニュー（⋮）をタップ\n③「ホーム画面に追加」をタップ');
+        }
     }
-}
-// iOSは beforeinstallprompt が発火しないので常にボタン表示
-const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-if (isIOS) {
-    document.getElementById('pwa-install-btn').classList.add('visible');
 }
 </script>
 """, unsafe_allow_html=True)
