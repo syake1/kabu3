@@ -230,28 +230,30 @@ def send_buy_alert(signal_rows, oshime_rows):
         gmail_user = st.secrets["gmail_user"]
         gmail_pass = st.secrets["gmail_pass"]
     except Exception:
-        return False, "Secretsが未設定です（設定方法はアプリ内を確認）"
+        return False, "Secretsが未設定です"
 
     if not signal_rows and not oshime_rows:
         return False, "通知対象なし"
 
     today = datetime.now().strftime("%Y年%m月%d日 %H:%M")
-    lines = [f"📈 株式買いシグナル通知  {today}\n"]
+    lines = ["📈 株式買いシグナル通知  " + today, ""]
 
     if signal_rows:
         lines.append("=" * 38)
         lines.append("🔥 マルチTF買いシグナル")
         lines.append("=" * 38)
         for r in signal_rows:
-            lines.append(
-                f"【{r[\'強度\']}】{r[\'銘柄名\']} ({r[\'コード\']})"
-            )
-            lines.append(
-                f"  日足:{r[\'日足\']} 1h:{r[\'1時間足\']} 5分:{r[\'5分足\']}"
-            )
-            lines.append(
-                f"  RSI:{r.get(\'RSI(日足)\',\'−\')}  {r.get(\'MA25反発\',,\'\')}"
-            )
+            grade  = r.get("強度", "")
+            name   = r.get("銘柄名", "")
+            code   = r.get("コード", "")
+            nichi  = r.get("日足", "")
+            ichi   = r.get("1時間足", "")
+            go     = r.get("5分足", "")
+            rsi    = r.get("RSI(日足)", "−")
+            ma25   = r.get("MA25反発", "")
+            lines.append("【" + grade + "】" + name + " (" + code + ")")
+            lines.append("  日足:" + str(nichi) + " 1h:" + str(ichi) + " 5分:" + str(go))
+            lines.append("  RSI:" + str(rsi) + "  " + str(ma25))
 
     if oshime_rows:
         lines.append("")
@@ -259,24 +261,35 @@ def send_buy_alert(signal_rows, oshime_rows):
         lines.append("📉 押し目買いシグナル")
         lines.append("=" * 38)
         for r in oshime_rows:
-            lines.append(f"【{r[\'判定\']}】{r[\'銘柄名\']} ({r[\'コード\']})")
-            lines.append(f"  株価:¥{r[\'株価\']:,}  押し目:{r[\'押し目幅\']}  サポート:{r[\'サポート\']}")
-            lines.append(f"  エントリー:¥{r[\'エントリー\']:,.0f}  損切り:¥{r[\'損切り\']:,.1f}  利確:¥{r[\'利確目標\']:,.0f}")
-            lines.append(f"  根拠: {r[\'根拠\']}")
+            hantei  = r.get("判定", "")
+            name    = r.get("銘柄名", "")
+            code    = r.get("コード", "")
+            kakaku  = r.get("株価", 0)
+            oshime  = r.get("押し目幅", "")
+            support = r.get("サポート", "")
+            entry   = r.get("エントリー", 0)
+            stop    = r.get("損切り", 0)
+            target  = r.get("利確目標", 0)
+            reason  = r.get("根拠", "")
+            lines.append("【" + hantei + "】" + name + " (" + code + ")")
+            lines.append("  株価:¥" + str(kakaku) + "  押し目:" + oshime + "  サポート:" + support)
+            lines.append("  エントリー:¥" + str(entry) + "  損切り:¥" + str(stop) + "  利確:¥" + str(target))
+            lines.append("  根拠: " + reason)
 
-    lines.append("\n⚠️ 投資判断はご自身の責任でお願いします。")
+    lines.append("")
+    lines.append("⚠️ 投資判断はご自身の責任でお願いします。")
     body = "\n".join(lines)
 
     try:
         msg = MIMEMultipart()
         msg["From"]    = gmail_user
         msg["To"]      = ALERT_TO
-        msg["Subject"] = f"📈 買いシグナル {today}"
+        msg["Subject"] = "📈 買いシグナル " + today
         msg.attach(MIMEText(body, "plain", "utf-8"))
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, ALERT_TO, msg.as_string())
-        return True, f"{len(signal_rows)+len(oshime_rows)}件のシグナルを送信しました"
+        return True, str(len(signal_rows) + len(oshime_rows)) + "件のシグナルを送信しました"
     except Exception as e:
         return False, str(e)
 
