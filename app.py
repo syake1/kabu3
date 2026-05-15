@@ -1075,25 +1075,25 @@ with tab_result:
             cb.metric("🔴 売り",f"{len(sell_rows)}銘柄")
             cc.metric("➖ 様子見",f"{len(wait_rows)}銘柄")
             st.divider()
-            col_buy, col_sell = st.columns(2)
-            with col_buy:
+            # 🟢 買い銘柄 表形式
+            if not buy_rows.empty:
                 st.markdown("### 🟢 買い銘柄")
-                if buy_rows.empty: st.info("現在なし")
-                else:
-                    for _, row in buy_rows.iterrows():
-                        with st.container(border=True):
-                            m25 = "　★25MA反発" if row.get("MA25反発")=="★" else ""
-                            st.markdown(f"**{row['銘柄名']}**{m25}")
-                            st.caption(f"`{row['コード']}`　{row['強度']}")
-                            st.caption(f"RSI {row.get(f'RSI({tf_key})','N/A')}　Stoch {row.get(f'Stoch({tf_key})','N/A')}")
-            with col_sell:
+                show_cols = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","MA25反発",
+                             f"RSI({tf_key})",f"Stoch({tf_key})",f"ADX({tf_key})"]
+                show_cols = [c for c in show_cols if c in buy_rows.columns]
+                st.dataframe(buy_rows[show_cols].reset_index(drop=True),
+                             use_container_width=True, hide_index=True)
+            else:
+                st.info("🟢 買いシグナルなし")
+            st.divider()
+            # 🔴 売り銘柄 表形式
+            if not sell_rows.empty:
                 st.markdown("### 🔴 売り銘柄")
-                if sell_rows.empty: st.info("現在なし")
-                else:
-                    for _, row in sell_rows.iterrows():
-                        with st.container(border=True):
-                            st.markdown(f"**{row['銘柄名']}**")
-                            st.caption(f"`{row['コード']}`")
+                show_cols = ["銘柄名","コード","セクター","日足","1時間足","5分足",
+                             f"RSI({tf_key})",f"Stoch({tf_key})"]
+                show_cols = [c for c in show_cols if c in sell_rows.columns]
+                st.dataframe(sell_rows[show_cols].reset_index(drop=True),
+                             use_container_width=True, hide_index=True)
             if not wait_rows.empty:
                 with st.expander(f"➖ 様子見 {len(wait_rows)}銘柄"):
                     st.write("　".join(wait_rows['銘柄名'].tolist()))
@@ -1228,3 +1228,4 @@ with tab_manage:
     if st.button("🔄 デフォルトに戻す", use_container_width=True):
         st.session_state['tickers'] = DEFAULT_TICKERS
         save_tickers(); st.success("デフォルトに戻しました。"); st.rerun()
+s
