@@ -1,0 +1,44 @@
+name: 自動スキャン（9時〜15時・1時間おき）
+
+on:
+  schedule:
+    # JST = UTC+9 なので UTC時間で設定
+    # 9時JST  = 0時UTC
+    # 10時JST = 1時UTC
+    # 11時JST = 2時UTC
+    # 12時JST = 3時UTC
+    # 13時JST = 4時UTC
+    # 14時JST = 5時UTC
+    # 15時JST = 6時UTC
+    - cron: '0 0 * * 1-5'  # 月〜金 9時JST
+    - cron: '0 1 * * 1-5'  # 月〜金 10時JST
+    - cron: '0 2 * * 1-5'  # 月〜金 11時JST
+    - cron: '0 3 * * 1-5'  # 月〜金 12時JST
+    - cron: '0 4 * * 1-5'  # 月〜金 13時JST
+    - cron: '0 5 * * 1-5'  # 月〜金 14時JST
+    - cron: '0 6 * * 1-5'  # 月〜金 15時JST
+  workflow_dispatch:        # 手動実行ボタン
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: ライブラリインストール
+        run: |
+          pip install yfinance pandas numpy
+
+      - name: 自動スキャン実行
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+        run: |
+          python auto_scan.py
