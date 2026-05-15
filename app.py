@@ -390,13 +390,13 @@ def calculate_indicators(df, bb_std=2.0):
 # ╚══════════════════════════════════════════════════════════╝
 def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0):
     """
-    押し目買いの判定
-    ① 上昇トレンド: MA5 > MA25 > MA75（株が右肩上がり）
-    ② 直近高値から pullback_min〜pullback_max% 下落（調整中）
-    ③ MA5またはMA25に near_ma_pct% 以内まで接近（押し目ポイント）
-    ④ RSIが40〜65（下がりすぎていない）
-    ⑤ 出来高が平均より少ない（健全な調整 = ダマシではない）
-    ⑥ MACDヒストグラムが底打ちしている
+    本当の押し目買い判定（高値圏除外版）
+    ① 上昇トレンド: MA5 > MA25 > MA75
+    ② RSIが30以下まで下落 → 売られすぎ圏に到達
+    ③ RSIが30から反発してきた
+    ④ ボリンジャーバンド -2σ（下限）に株価がタッチ
+    ⑤ 25日線付近にいる
+    ⑥ MACDヒストグラムが底打ち反転
     """
     try:
         df = yf.download(code, period="6mo", interval="1d", progress=False)
@@ -407,73 +407,91 @@ def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0
         df.dropna(how='all', inplace=True)
         df = calculate_indicators(df)
 
-        last = df.iloc[-1]
-        price  = float(last['Close'])
-        ma5    = float(last['MA_5'])
-        ma25   = float(last['MA_25'])
-        ma75   = float(last['MA_75'])
-        rsi    = float(last['RSI'])
-        vol    = float(df['Volume'].iloc[-1])
-        vol_avg = float(df['Volume'].iloc[-20:].mean())
-        macd_hist     = float(last['MACD_Hist'])
-        macd_hist_prev = float(df['MACD_Hist'].iloc[-2])
+        last      = df.iloc[-1]
+        prev      = df.iloc[-2]
+        prev2     = df.iloc[-3]
 
-        # ① 上昇トレンド確認
+        price     = float(last['Close'])
+        ma5       = float(last['MA_5'])
+        ma25      = float(last['MA_25'])
+        ma75      = float(last['MA_75'])
+        rsi       = float(last['RSI'])
+        rsi_prev  = float(prev['RSI'])
+        rsi_prev2 = float(prev2['RSI'])
+        bb_lower  = float(last['BB_Lower'])
+        bb_upper  = float(last['BB_Upper'])
+        macd_hist      = float(last['MACD_Hist'])
+        macd_hist_prev = float(prev['MACD_Hist'])
+        vol      = float(df['Volume'].iloc[-1])
+        vol_avg  = float(df['Volume'].iloc[-20:].mean())
+
+        # ① 上昇トレンド確認（MA5 > MA25 > MA75）
         uptrend = ma5 > ma25 > ma75
         if not uptrend:
             return None
 
-        # ② 直近20日高値からの下落率
-        high20 = float(df['High'].iloc[-20:].max())
-        pullback = (high20 - price) / high20 * 100
-        if not (pullback_min <= pullback <= pullback_max):
+        # ② RSIが直近5日以内に30以下を記録したか
+        rsi_min5 = float(df['RSI'].iloc[-5:].min())
+        rsi_touched_oversold = rsi_min5 <= 32
+        if not rsi_touched_oversold:
             return None
 
-        # ③ MA5またはMA25への接近
-        near_ma5  = abs(price - ma5)  / ma5  * 100 <= near_ma_pct
-        near_ma25 = abs(price - ma25) / ma25 * 100 <= near_ma_pct
-        support_level = "MA5" if near_ma5 else ("MA25" if near_ma25 else None)
-        if support_level is None:
+        # ③ RSIが反発中（今日 > 昨日 or 一昨日から上向き）
+        rsi_rebounding = rsi > rsi_prev or rsi > rsi_prev2
+        if not rsi_rebounding:
             return None
 
-        # ④ RSI適正範囲
-        if not (35 <= rsi <= 68):
+        # ④ ボリンジャーバンド下限タッチ（直近5日で株価が-2σ以下に触れた）
+        bb_touched = False
+        for i in range(-5, 0):
+            low_i  = float(df['Low'].iloc[i])
+            bb_l_i = float(df['BB_Lower'].iloc[i])
+            if low_i <= bb_l_i * 1.01:
+                bb_touched = True
+                break
+        if not bb_touched:
             return None
 
-        # ⑤ 出来高が平均以下（健全な調整）
-        vol_healthy = vol < vol_avg * 1.2
+        # ⑤ 現在値が25日線付近（±5%以内）
+        near_ma25 = abs(price - ma25) / ma25 * 100 <= 5.0
+        near_ma5  = abs(price - ma5)  / ma5  * 100 <= 3.0
+        support_level = "MA25" if near_ma25 else ("MA5" if near_ma5 else "BB下限")
 
-        # ⑥ MACDヒストグラム底打ち判定
+        # ⑥ MACDヒストグラム底打ち
         macd_bottom = macd_hist > macd_hist_prev
+
+        # 高値圏チェック（52週高値の95%以上なら除外）
+        high52 = float(df['High'].iloc[-252:].max()) if len(df) >= 252 else float(df['High'].max())
+        if price >= high52 * 0.95:
+            return None
 
         # スコア計算
         score = 0
         reasons = []
-        if near_ma25:          score += 3; reasons.append("MA25タッチ")
-        if near_ma5:           score += 2; reasons.append("MA5タッチ")
-        if vol_healthy:        score += 2; reasons.append("出来高健全")
-        if macd_bottom:        score += 2; reasons.append("MACD底打ち")
-        if 40 <= rsi <= 55:    score += 2; reasons.append("RSI良好")
-        if pullback <= 8:      score += 1; reasons.append("浅い押し目")
 
-        grade = "🟢 絶好の押し目" if score >= 7 else \
-                "🟡 押し目候補"   if score >= 4 else \
-                "⬜ 参考"
+        score += 4; reasons.append("RSI売られすぎ圏タッチ")
+        score += 3; reasons.append("BB下限タッチ")
+        if rsi_rebounding:   score += 2; reasons.append("RSI反発中")
+        if macd_bottom:      score += 2; reasons.append("MACD底打ち")
+        if near_ma25:        score += 2; reasons.append("MA25付近")
+        if vol > vol_avg * 1.5: score += 1; reasons.append("出来高急増")
 
-        # エントリー・損切り・利確
-        entry  = price
-        stop   = round(ma25 * 0.97, 1)   # MA25を3%下回ったら損切り
-        target = round(high20 * 1.02, 1) # 直近高値を上回れば利確
+        grade = "🟢 絶好の押し目" if score >= 10 else                 "🟡 押し目候補"   if score >= 7  else                 "⬜ 参考"
+
+        high20 = float(df['High'].iloc[-20:].max())
+        entry  = round(price, 1)
+        stop   = round(bb_lower * 0.98, 1)
+        target = round(ma25 * 1.10, 1)
 
         return {
             "銘柄名":     name,
             "コード":     code,
             "株価":       round(price, 1),
-            "直近高値":   round(high20, 1),
-            "押し目幅":   f"{pullback:.1f}%",
-            "サポート":   support_level,
+            "BB下限":     round(bb_lower, 1),
             "RSI":        round(rsi, 1),
-            "出来高比":   f"{vol/vol_avg:.1f}x",
+            "RSI最小":    round(rsi_min5, 1),
+            "サポート":   support_level,
+            "出来高比":   str(round(vol/vol_avg, 1)) + "x",
             "MACDボトム": "✓" if macd_bottom else "－",
             "スコア":     score,
             "判定":       grade,
@@ -481,8 +499,131 @@ def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0
             "損切り":     stop,
             "利確目標":   target,
             "根拠":       " / ".join(reasons),
+            "押し目幅":   str(round((high20 - price) / high20 * 100, 1)) + "%",
+            "直近高値":   round(high20, 1),
         }
     except Exception as e:
+        return None
+
+
+def scan_oshime_1h(code, name):
+    """1時間足 デイトレ押し目買い判定"""
+    try:
+        df = yf.download(code, period="30d", interval="1h", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price = float(last['Close'])
+        ma25  = float(last['MA_25'])
+        rsi   = float(last['RSI'])
+        rsi_prev = float(prev['RSI'])
+        bb_lower = float(last['BB_Lower'])
+        macd_hist      = float(last['MACD_Hist'])
+        macd_hist_prev = float(prev['MACD_Hist'])
+
+        # RSIが35以下タッチ → 反発中
+        rsi_min = float(df['RSI'].iloc[-8:].min())
+        if rsi_min > 35:
+            return None
+        if not (rsi > rsi_prev):
+            return None
+
+        # BB下限タッチ（直近8本）
+        bb_touch = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
+                       for i in range(-8, 0))
+        if not bb_touch:
+            return None
+
+        macd_bottom = macd_hist > macd_hist_prev
+        near_ma25   = abs(price - ma25) / ma25 * 100 <= 5.0
+
+        score = 4
+        reasons = ["RSI売られすぎ(1h)", "BB下限(1h)"]
+        if macd_bottom: score += 2; reasons.append("MACD底打ち(1h)")
+        if near_ma25:   score += 2; reasons.append("MA25付近(1h)")
+        if rsi < 32:    score += 1; reasons.append("RSI深め")
+
+        grade = "🟢 絶好(1h)" if score >= 7 else "🟡 候補(1h)"
+
+        return {
+            "銘柄名": name, "コード": code, "時間軸": "1時間足",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
+            "サポート": "MA25" if near_ma25 else "BB下限",
+            "MACDボトム": "✓" if macd_bottom else "－",
+            "スコア": score, "判定": grade,
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.98, 1),
+            "利確目標": round(price * 1.03, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
+        return None
+
+
+def scan_oshime_5m(code, name):
+    """5分足 デイトレ押し目買い判定"""
+    try:
+        df = yf.download(code, period="5d", interval="5m", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price = float(last['Close'])
+        ma25  = float(last['MA_25'])
+        rsi   = float(last['RSI'])
+        rsi_prev = float(prev['RSI'])
+        bb_lower = float(last['BB_Lower'])
+        macd_hist      = float(last['MACD_Hist'])
+        macd_hist_prev = float(prev['MACD_Hist'])
+
+        # RSIが30以下タッチ → 反発中
+        rsi_min = float(df['RSI'].iloc[-12:].min())
+        if rsi_min > 32:
+            return None
+        if not (rsi > rsi_prev):
+            return None
+
+        # BB下限タッチ（直近12本）
+        bb_touch = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
+                       for i in range(-12, 0))
+        if not bb_touch:
+            return None
+
+        macd_bottom = macd_hist > macd_hist_prev
+        near_ma25   = abs(price - ma25) / ma25 * 100 <= 3.0
+
+        score = 4
+        reasons = ["RSI売られすぎ(5m)", "BB下限(5m)"]
+        if macd_bottom: score += 2; reasons.append("MACD底打ち(5m)")
+        if near_ma25:   score += 2; reasons.append("MA25付近(5m)")
+
+        grade = "🟢 絶好(5m)" if score >= 7 else "🟡 候補(5m)"
+
+        return {
+            "銘柄名": name, "コード": code, "時間軸": "5分足",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
+            "サポート": "MA25" if near_ma25 else "BB下限",
+            "MACDボトム": "✓" if macd_bottom else "－",
+            "スコア": score, "判定": grade,
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.99, 1),
+            "利確目標": round(price * 1.015, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
         return None
 
 def detect_signals(df, rsi_ob=70, rsi_os=30, sensitivity="標準",
@@ -651,8 +792,8 @@ else:
 total_stocks = len(target_tickers)
 
 # ── タブ ─────────────────────────────────────────────────────
-tab_oshime, tab_scan, tab_result, tab_chart, tab_sector, tab_winrate, tab_manage = st.tabs([
-    "📉 押し目買い", "🔍 スキャン", "📊 結果詳細", "📈 チャート", "🌀 セクター", "🏆 勝率", "➕ 銘柄管理"
+tab_oshime, tab_daytrade, tab_scan, tab_result, tab_chart, tab_sector, tab_winrate, tab_manage = st.tabs([
+    "📉 押し目(日足)", "⚡ デイトレ", "🔍 スキャン", "📊 結果詳細", "📈 チャート", "🌀 セクター", "🏆 勝率", "➕ 銘柄管理"
 ])
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -763,6 +904,91 @@ with tab_oshime:
                 draw_chart(r['コード'], r['銘柄名'],
                            entry=r['エントリー'], stop=r['損切り'], target=r['利確目標'])
 
+# ═══════════════ タブ2: デイトレ押し目 ════════════════════════════
+with tab_daytrade:
+    st.subheader("⚡ デイトレ押し目スキャナー")
+    st.caption("1時間足・5分足でRSI売られすぎ＋BB下限タッチを検出")
+
+    col1, col2 = st.columns(2)
+    col1.metric("対象銘柄", f"{total_stocks}銘柄")
+    col2.metric("時間軸", "1時間足 ＋ 5分足")
+
+    if st.button("⚡ デイトレスキャン開始", use_container_width=True, key="daytrade_btn"):
+        st.session_state.pop('daytrade_results', None)
+        results_1h = []
+        results_5m = []
+        prog = st.progress(0, text="スキャン中...")
+        stbox = st.empty()
+
+        for i, (name, code) in enumerate(target_tickers.items()):
+            stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
+            r1h = scan_oshime_1h(code, name)
+            r5m = scan_oshime_5m(code, name)
+            if r1h: results_1h.append(r1h)
+            if r5m: results_5m.append(r5m)
+            prog.progress((i+1)/total_stocks, text=f"{i+1}/{total_stocks}")
+
+        prog.progress(1.0, text="✅ 完了！")
+        stbox.success(f"✅ 完了！  1h:{len(results_1h)}銘柄 / 5分:{len(results_5m)}銘柄")
+        st.session_state['daytrade_results'] = {
+            "1h": results_1h, "5m": results_5m
+        }
+
+        # メール送信
+        all_dt = results_1h + results_5m
+        best_dt = [r for r in all_dt if r.get("スコア", 0) >= 7]
+        if best_dt:
+            ok, msg = send_buy_alert([], best_dt)
+            if ok:
+                st.success(f"📧 デイトレシグナルをメール送信！ {msg}")
+
+    if 'daytrade_results' in st.session_state:
+        dt = st.session_state['daytrade_results']
+        results_1h = dt.get("1h", [])
+        results_5m = dt.get("5m", [])
+
+        # 両TF一致（最強）
+        codes_1h = {r["コード"] for r in results_1h}
+        codes_5m = {r["コード"] for r in results_5m}
+        both     = codes_1h & codes_5m
+
+        if both:
+            st.markdown("### 🔥 1時間足＋5分足 両方シグナル（最強）")
+            for code in both:
+                r = next(r for r in results_1h if r["コード"] == code)
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    c1.markdown(f"**{r['銘柄名']}** `{r['コード']}`　🔥 両TF一致")
+                    c1.write(f"RSI(1h):{r['RSI']}  BB下限:{r['BB下限']}  {r['根拠']}")
+                    c2.metric("株価", f"¥{r['株価']:,}")
+                    e1, e2, e3 = st.columns(3)
+                    e1.metric("エントリー", f"¥{r['エントリー']:,}")
+                    e2.metric("損切り",     f"¥{r['損切り']:,}")
+                    e3.metric("利確(+3%)",  f"¥{r['利確目標']:,}")
+            st.divider()
+
+        sub_1h, sub_5m = st.tabs(["⏱ 1時間足", "⚡ 5分足"])
+
+        with sub_1h:
+            st.markdown(f"### ⏱ 1時間足 押し目候補　{len(results_1h)}銘柄")
+            if not results_1h:
+                st.info("現在なし")
+            else:
+                df_1h = pd.DataFrame(results_1h).sort_values("スコア", ascending=False)
+                show = ["銘柄名","コード","株価","RSI","RSI最小","BB下限","サポート","MACDボトム","スコア","判定","エントリー","損切り","利確目標"]
+                show = [c for c in show if c in df_1h.columns]
+                st.dataframe(df_1h[show].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        with sub_5m:
+            st.markdown(f"### ⚡ 5分足 押し目候補　{len(results_5m)}銘柄")
+            if not results_5m:
+                st.info("現在なし")
+            else:
+                df_5m = pd.DataFrame(results_5m).sort_values("スコア", ascending=False)
+                show = ["銘柄名","コード","株価","RSI","RSI最小","BB下限","サポート","MACDボトム","スコア","判定","エントリー","損切り","利確目標"]
+                show = [c for c in show if c in df_5m.columns]
+                st.dataframe(df_5m[show].reset_index(drop=True), use_container_width=True, hide_index=True)
+
 # ═══════════════ タブ2: スキャン ════════════════════════════════
 with tab_scan:
     c1, c2 = st.columns(2)
@@ -872,6 +1098,31 @@ with tab_result:
                 with st.expander(f"➖ 様子見 {len(wait_rows)}銘柄"):
                     st.write("　".join(wait_rows['銘柄名'].tolist()))
 
+        # ── 25日線反発 ハイライト表示（一番上）──────────────────
+        ma25_rows = df_all[df_all["MA25反発"] == "★"].sort_values("一致数", ascending=False)
+        if not ma25_rows.empty:
+            st.markdown("### ★ 25日線反発銘柄")
+            cols_per_row = 2
+            rows_list = [ma25_rows.iloc[i:i+cols_per_row] for i in range(0, len(ma25_rows), cols_per_row)]
+            for row_group in rows_list:
+                cols = st.columns(cols_per_row)
+                for ci, (_, row) in enumerate(row_group.iterrows()):
+                    with cols[ci]:
+                        with st.container(border=True):
+                            buy_count = row.get("一致数", 0)
+                            grade = row.get("強度", "－")
+                            nichi = row.get("日足", "➖")
+                            ichi  = row.get("1時間足", "➖")
+                            go    = row.get("5分足", "➖")
+                            rsi   = row.get("RSI(日足)", "−")
+                            st.markdown(f"**{row['銘柄名']}**　`{row['コード']}`")
+                            st.write(f"日足:{nichi}　1h:{ichi}　5分:{go}　{grade}")
+                            st.caption(f"RSI:{rsi}　セクター:{row.get('セクター','')}")
+            st.divider()
+        else:
+            st.info("現在、25日線反発銘柄はありません。スキャンを実行してください。")
+            st.divider()
+
         sub_all,sub_1d,sub_1h,sub_5m,sub_strong = st.tabs(["🗒 全銘柄","📅 日足","⏱ 1時間足","⚡ 5分足","🏆 複数TF一致"])
         SHOW = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","MA25反発"]
         with sub_all:
@@ -977,3 +1228,4 @@ with tab_manage:
     if st.button("🔄 デフォルトに戻す", use_container_width=True):
         st.session_state['tickers'] = DEFAULT_TICKERS
         save_tickers(); st.success("デフォルトに戻しました。"); st.rerun()
+s
