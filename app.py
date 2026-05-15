@@ -1228,4 +1228,3 @@ with tab_manage:
     if st.button("🔄 デフォルトに戻す", use_container_width=True):
         st.session_state['tickers'] = DEFAULT_TICKERS
         save_tickers(); st.success("デフォルトに戻しました。"); st.rerun()
-s
