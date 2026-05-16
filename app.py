@@ -1014,7 +1014,13 @@ with tab_daytrade:
                 df_1h = pd.DataFrame(results_1h).sort_values("スコア", ascending=False)
                 show = ["銘柄名","コード","株価","RSI","RSI最小","BB下限","サポート","MACDボトム","スコア","判定","エントリー","損切り","利確目標"]
                 show = [c for c in show if c in df_1h.columns]
-                st.dataframe(df_1h[show].reset_index(drop=True), use_container_width=True, hide_index=True)
+                df_1h_show = df_1h[show].reset_index(drop=True)
+                event_1h = st.dataframe(df_1h_show, use_container_width=True, hide_index=True,
+                                        on_select="rerun", selection_mode="single-row")
+                if event_1h.selection.rows:
+                    sel = df_1h_show.iloc[event_1h.selection.rows[0]]
+                    st.markdown(f"#### 📈 {sel['銘柄名']} チャート（1時間足）")
+                    draw_chart(sel['コード'], sel['銘柄名'])
 
         with sub_5m:
             st.markdown(f"### ⚡ 5分足 押し目候補　{len(results_5m)}銘柄")
@@ -1024,7 +1030,13 @@ with tab_daytrade:
                 df_5m = pd.DataFrame(results_5m).sort_values("スコア", ascending=False)
                 show = ["銘柄名","コード","株価","RSI","RSI最小","BB下限","サポート","MACDボトム","スコア","判定","エントリー","損切り","利確目標"]
                 show = [c for c in show if c in df_5m.columns]
-                st.dataframe(df_5m[show].reset_index(drop=True), use_container_width=True, hide_index=True)
+                df_5m_show = df_5m[show].reset_index(drop=True)
+                event_5m = st.dataframe(df_5m_show, use_container_width=True, hide_index=True,
+                                        on_select="rerun", selection_mode="single-row")
+                if event_5m.selection.rows:
+                    sel = df_5m_show.iloc[event_5m.selection.rows[0]]
+                    st.markdown(f"#### 📈 {sel['銘柄名']} チャート（5分足）")
+                    draw_chart(sel['コード'], sel['銘柄名'])
 
 # ═══════════════ タブ2: スキャン ════════════════════════════════
 with tab_scan:
@@ -1118,25 +1130,35 @@ with tab_result:
             cb.metric("🔴 売り",f"{len(sell_rows)}銘柄")
             cc.metric("➖ 様子見",f"{len(wait_rows)}銘柄")
             st.divider()
-            # 🟢 買い銘柄 表形式
+            # 🟢 買い銘柄 表形式（クリックでチャート）
             if not buy_rows.empty:
-                st.markdown("### 🟢 買い銘柄")
+                st.markdown("### 🟢 買い銘柄　　*← 行をクリックするとチャートが表示されます*")
                 show_cols = ["銘柄名","コード","セクター","日足","1時間足","時刻(1時間足)","5分足","時刻(5分足)","強度","MA25反発",
                              f"RSI({tf_key})",f"Stoch({tf_key})",f"ADX({tf_key})"]
                 show_cols = [c for c in show_cols if c in buy_rows.columns]
-                st.dataframe(buy_rows[show_cols].reset_index(drop=True),
-                             use_container_width=True, hide_index=True)
+                df_show = buy_rows[show_cols].reset_index(drop=True)
+                event = st.dataframe(df_show, use_container_width=True, hide_index=True,
+                                     on_select="rerun", selection_mode="single-row")
+                if event.selection.rows:
+                    sel = df_show.iloc[event.selection.rows[0]]
+                    st.markdown(f"#### 📈 {sel['銘柄名']} チャート")
+                    draw_chart(sel['コード'], sel['銘柄名'])
             else:
                 st.info("🟢 買いシグナルなし")
             st.divider()
-            # 🔴 売り銘柄 表形式
+            # 🔴 売り銘柄 表形式（クリックでチャート）
             if not sell_rows.empty:
-                st.markdown("### 🔴 売り銘柄")
+                st.markdown("### 🔴 売り銘柄　　*← 行をクリックするとチャートが表示されます*")
                 show_cols = ["銘柄名","コード","セクター","日足","1時間足","5分足",
                              f"RSI({tf_key})",f"Stoch({tf_key})"]
                 show_cols = [c for c in show_cols if c in sell_rows.columns]
-                st.dataframe(sell_rows[show_cols].reset_index(drop=True),
-                             use_container_width=True, hide_index=True)
+                df_show_s = sell_rows[show_cols].reset_index(drop=True)
+                event_s = st.dataframe(df_show_s, use_container_width=True, hide_index=True,
+                                       on_select="rerun", selection_mode="single-row")
+                if event_s.selection.rows:
+                    sel = df_show_s.iloc[event_s.selection.rows[0]]
+                    st.markdown(f"#### 📈 {sel['銘柄名']} チャート")
+                    draw_chart(sel['コード'], sel['銘柄名'])
             if not wait_rows.empty:
                 with st.expander(f"➖ 様子見 {len(wait_rows)}銘柄"):
                     st.write("　".join(wait_rows['銘柄名'].tolist()))
@@ -1147,8 +1169,13 @@ with tab_result:
         if not ma25_rows.empty:
             show_ma25 = ["銘柄名","コード","セクター","日足","1時間足","時刻(1時間足)","5分足","時刻(5分足)","強度","RSI(日足)","Stoch(日足)","ADX(日足)"]
             show_ma25 = [c for c in show_ma25 if c in ma25_rows.columns]
-            st.dataframe(ma25_rows[show_ma25].reset_index(drop=True),
-                         use_container_width=True, hide_index=True)
+            df_ma25_show = ma25_rows[show_ma25].reset_index(drop=True)
+            event_ma25 = st.dataframe(df_ma25_show, use_container_width=True, hide_index=True,
+                                      on_select="rerun", selection_mode="single-row")
+            if event_ma25.selection.rows:
+                sel = df_ma25_show.iloc[event_ma25.selection.rows[0]]
+                st.markdown(f"#### 📈 {sel['銘柄名']} チャート")
+                draw_chart(sel['コード'], sel['銘柄名'])
         else:
             st.info("現在、25日線反発銘柄はありません。スキャンを実行してください。")
         st.divider()
