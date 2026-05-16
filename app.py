@@ -683,10 +683,31 @@ def load_data(ticker, period, interval):
     except Exception:
         return pd.DataFrame()
 
+def get_signal_time(df, signal_col, tf):
+    """シグナルが最後に発生したローソク足の時刻を返す"""
+    try:
+        buy_rows = df[df[signal_col] == True]
+        if buy_rows.empty:
+            return None
+        last_signal_time = buy_rows.index[-1]
+        # 日足は日付だけ、1h・5分は時刻も表示
+        if tf == "1d":
+            return last_signal_time.strftime("%m/%d")
+        else:
+            # JSTに変換
+            try:
+                t = last_signal_time.tz_convert("Asia/Tokyo")
+            except Exception:
+                t = last_signal_time
+            return t.strftime("%m/%d %H:%M")
+    except Exception:
+        return None
+
+
 def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std):
     df = load_data(code, period, tf)
     if df.empty or len(df) < 50:
-        return "❓", None, None, None, False
+        return "❓", None, None, None, False, None
     df = calculate_indicators(df, bb_std=bb_std)
     df = detect_signals(df, rsi_ob=rsi_ob, rsi_os=rsi_os, sensitivity=sensitivity,
                         trend_filter=trend_filter, dmi_filter=dmi_filter, bb_std=bb_std)
@@ -695,9 +716,13 @@ def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_fi
     stoch_val = round(float(last['Stoch_K']),1) if not np.isnan(last['Stoch_K']) else None
     adx_val   = round(float(last['ADX']),    1) if not np.isnan(last['ADX'])     else None
     ma25_b    = bool(last['MA25_Bounce'])
-    if last['Buy_Signal']:  return "🟢", rsi_val, stoch_val, adx_val, ma25_b
-    if last['Sell_Signal']: return "🔴", rsi_val, stoch_val, adx_val, ma25_b
-    return "➖", rsi_val, stoch_val, adx_val, ma25_b
+    if last['Buy_Signal']:
+        sig_time = get_signal_time(df, 'Buy_Signal', tf)
+        return "🟢", rsi_val, stoch_val, adx_val, ma25_b, sig_time
+    if last['Sell_Signal']:
+        sig_time = get_signal_time(df, 'Sell_Signal', tf)
+        return "🔴", rsi_val, stoch_val, adx_val, ma25_b, sig_time
+    return "➖", rsi_val, stoch_val, adx_val, ma25_b, None
 
 TF_CONFIG = {
     "日足":    {"tf": "1d",  "period": "1y"},
@@ -1019,12 +1044,18 @@ with tab_scan:
             stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
             row = {"銘柄名": name, "コード": code, "セクター": code_to_sector.get(code,"その他")}
             for tf_label, cfg in TF_CONFIG.items():
-                sig, rsi_v, stoch_v, adx_v, ma25_b = scan_one(
+                sig, rsi_v, stoch_v, adx_v, ma25_b, sig_time = scan_one(
                     code, cfg["tf"], cfg["period"], rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std)
                 row[tf_label]              = sig
                 row[f"RSI({tf_label})"]   = rsi_v
                 row[f"Stoch({tf_label})"] = stoch_v
                 row[f"ADX({tf_label})"]   = adx_v
+                # シグナル発生時刻（1h・5分のみ）
+                if tf_label in ["1時間足", "5分足"] and sig == "🟢":
+                    row[f"時刻({tf_label})"] = sig_time or ""
+                elif tf_label not in [f"時刻({t})" for t in ["1時間足","5分足"]]:
+                    if f"時刻({tf_label})" not in row:
+                        row[f"時刻({tf_label})"] = ""
                 if tf_label == "日足":
                     row["MA25反発"] = "★" if ma25_b else ""
             buy_count  = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
@@ -1090,7 +1121,7 @@ with tab_result:
             # 🟢 買い銘柄 表形式
             if not buy_rows.empty:
                 st.markdown("### 🟢 買い銘柄")
-                show_cols = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","MA25反発",
+                show_cols = ["銘柄名","コード","セクター","日足","1時間足","時刻(1時間足)","5分足","時刻(5分足)","強度","MA25反発",
                              f"RSI({tf_key})",f"Stoch({tf_key})",f"ADX({tf_key})"]
                 show_cols = [c for c in show_cols if c in buy_rows.columns]
                 st.dataframe(buy_rows[show_cols].reset_index(drop=True),
@@ -1114,7 +1145,7 @@ with tab_result:
         ma25_rows = df_all[df_all["MA25反発"] == "★"].sort_values("一致数", ascending=False)
         st.markdown("### ★ 25日線反発銘柄")
         if not ma25_rows.empty:
-            show_ma25 = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","RSI(日足)","Stoch(日足)","ADX(日足)"]
+            show_ma25 = ["銘柄名","コード","セクター","日足","1時間足","時刻(1時間足)","5分足","時刻(5分足)","強度","RSI(日足)","Stoch(日足)","ADX(日足)"]
             show_ma25 = [c for c in show_ma25 if c in ma25_rows.columns]
             st.dataframe(ma25_rows[show_ma25].reset_index(drop=True),
                          use_container_width=True, hide_index=True)
@@ -1123,7 +1154,7 @@ with tab_result:
         st.divider()
 
         sub_all,sub_1d,sub_1h,sub_5m,sub_strong = st.tabs(["🗒 全銘柄","📅 日足","⏱ 1時間足","⚡ 5分足","🏆 複数TF一致"])
-        SHOW = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","MA25反発"]
+        SHOW = ["銘柄名","コード","セクター","日足","1時間足","時刻(1時間足)","5分足","時刻(5分足)","強度","MA25反発"]
         with sub_all:
             st.dataframe(df_all.sort_values('一致数',ascending=False)[SHOW].reset_index(drop=True), use_container_width=True, hide_index=True)
         with sub_1d: signal_cards("日足","日足")
