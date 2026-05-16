@@ -740,14 +740,35 @@ def get_chart_data(code):
     df = detect_signals(df)
     return df
 
-def draw_chart(code, name, entry=None, stop=None, target=None):
-    df = get_chart_data(code)
+@st.cache_data(ttl=180)
+def load_chart_data(code, interval, period):
+    """時間軸別にチャートデータを取得"""
+    try:
+        df = yf.download(code, period=period, interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how="all", inplace=True)
+        if pd.api.types.is_datetime64_any_dtype(df.index):
+            df.index = (df.index.tz_localize("Asia/Tokyo")
+                        if df.index.tz is None
+                        else df.index.tz_convert("Asia/Tokyo"))
+        df = calculate_indicators(df)
+        df = detect_signals(df)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def render_chart(df, name, code, tf_label, entry=None, stop=None, target=None):
+    """チャートを描画する共通関数"""
     if df is None or df.empty:
         st.warning("チャートデータを取得できませんでした")
         return
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
         row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
-        subplot_titles=[f"{name} ({code})", "MACD", "RSI"])
+        subplot_titles=[f"{name} ({code}) [{tf_label}]", "MACD", "RSI"])
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name="株価", increasing_line_color='#ef4444', decreasing_line_color='#3b82f6'), row=1, col=1)
@@ -755,27 +776,41 @@ def draw_chart(code, name, entry=None, stop=None, target=None):
         if col in df.columns:
             fig.add_trace(go.Scatter(x=df.index, y=df[col], name=label,
                 line=dict(color=color, width=1.5)), row=1, col=1)
-    # 押し目ライン
+    # BB
+    if 'BB_Upper' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], name="BB+",
+            line=dict(color='rgba(148,163,184,0.4)', dash='dot', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], name="BB-",
+            line=dict(color='rgba(148,163,184,0.4)', dash='dot', width=1),
+            fill='tonexty', fillcolor='rgba(148,163,184,0.05)'), row=1, col=1)
+    # エントリー・損切り・利確ライン
     if entry:
         fig.add_hline(y=entry,  line_color='#00d4aa', line_dash='dash', annotation_text=f"エントリー {entry}", row=1, col=1)
     if stop:
         fig.add_hline(y=stop,   line_color='#ef4444', line_dash='dash', annotation_text=f"損切り {stop}", row=1, col=1)
     if target:
         fig.add_hline(y=target, line_color='#facc15', line_dash='dash', annotation_text=f"利確 {target}", row=1, col=1)
-    buy_pts = df[df['Buy_Signal']]
-    if not buy_pts.empty:
-        fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.99, mode='markers',
-            marker=dict(symbol='triangle-up', size=12, color='#00d4aa'), name='買いシグナル'), row=1, col=1)
+    # 買いシグナルマーク
+    if 'Buy_Signal' in df.columns:
+        buy_pts = df[df['Buy_Signal']]
+        if not buy_pts.empty:
+            fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.99, mode='markers',
+                marker=dict(symbol='triangle-up', size=12, color='#00d4aa'), name='買いシグナル'), row=1, col=1)
+    # MACD
     hist_colors = ['#ef4444' if v < 0 else '#00d4aa' for v in df['MACD_Hist'].fillna(0)]
     fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], name="MACDヒスト",
         marker_color=hist_colors, opacity=0.7), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],        name="MACD",   line=dict(color='#60a5fa', width=1.2)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'], name="シグナル", line=dict(color='#f97316', width=1.2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
+        name="MACD", line=dict(color='#60a5fa', width=1.2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'],
+        name="シグナル", line=dict(color='#f97316', width=1.2)), row=2, col=1)
+    # RSI
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI",
         line=dict(color='#a78bfa', width=1.5)), row=3, col=1)
     fig.add_hline(y=70, line_color='rgba(239,68,68,0.4)',  line_dash='dash', row=3, col=1)
     fig.add_hline(y=30, line_color='rgba(0,212,170,0.4)', line_dash='dash', row=3, col=1)
-    fig.update_layout(height=600, paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+    fig.update_layout(
+        height=620, paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
         font=dict(color='#e6edf3', size=11),
         legend=dict(orientation='h', y=1.02, font=dict(size=10)),
         xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
@@ -783,6 +818,31 @@ def draw_chart(code, name, entry=None, stop=None, target=None):
         fig.update_xaxes(gridcolor='#1e293b', row=i, col=1)
         fig.update_yaxes(gridcolor='#1e293b', row=i, col=1)
     st.plotly_chart(fig, use_container_width=True)
+
+
+def draw_chart(code, name, entry=None, stop=None, target=None, default_tf="日足"):
+    """時間軸切り替え付きチャート表示"""
+    # 時間軸選択ボタン
+    tf_options = {"日足": ("1d","6mo"), "1時間足": ("1h","1mo"), "5分足": ("5m","5d")}
+    key_prefix = f"tf_{code}_{name}"
+    cols = st.columns(3)
+    tf_labels = list(tf_options.keys())
+    # session_stateで選択中の時間軸を管理
+    state_key = f"chart_tf_{code}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = default_tf
+    for i, tf_label in enumerate(tf_labels):
+        btn_type = "primary" if st.session_state[state_key] == tf_label else "secondary"
+        if cols[i].button(tf_label, key=f"{key_prefix}_{tf_label}", type=btn_type, use_container_width=True):
+            st.session_state[state_key] = tf_label
+
+    selected_tf = st.session_state[state_key]
+    interval, period = tf_options[selected_tf]
+
+    with st.spinner(f"{selected_tf}のデータを取得中..."):
+        df = load_chart_data(code, interval, period)
+
+    render_chart(df, name, code, selected_tf, entry, stop, target)
 
 # ── タイトル ──────────────────────────────────────────────────
 st.title("📡 kabu3 Pro")
