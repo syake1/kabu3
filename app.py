@@ -764,6 +764,18 @@ st.title("📡 kabu3 Pro")
 st.caption("マルチTFスキャン ｜ 押し目買いスキャナー ｜ セクターローテーション ｜ 勝率トラッキング")
 
 # ── サイドバー ────────────────────────────────────────────────
+# 変数初期化
+selected_sectors = []
+rsi_ob = 70
+rsi_os = 30
+bb_std = 2.0
+sensitivity = "標準"
+trend_filter = True
+dmi_filter = False
+pb_min = 3.0
+pb_max = 15.0
+pb_near = 3.0
+
 with st.sidebar:
     st.header("⚙️ スキャン設定")
     sensitivity  = st.radio("シグナル感度", ["標準", "敏感"], horizontal=True)
@@ -1228,4 +1240,3 @@ with tab_manage:
     if st.button("🔄 デフォルトに戻す", use_container_width=True):
         st.session_state['tickers'] = DEFAULT_TICKERS
         save_tickers(); st.success("デフォルトに戻しました。"); st.rerun()
-s
