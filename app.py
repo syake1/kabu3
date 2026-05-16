@@ -1110,30 +1110,17 @@ with tab_result:
                 with st.expander(f"➖ 様子見 {len(wait_rows)}銘柄"):
                     st.write("　".join(wait_rows['銘柄名'].tolist()))
 
-        # ── 25日線反発 ハイライト表示（一番上）──────────────────
+        # ── 25日線反発 表形式表示（一番上）────────────────────
         ma25_rows = df_all[df_all["MA25反発"] == "★"].sort_values("一致数", ascending=False)
+        st.markdown("### ★ 25日線反発銘柄")
         if not ma25_rows.empty:
-            st.markdown("### ★ 25日線反発銘柄")
-            cols_per_row = 2
-            rows_list = [ma25_rows.iloc[i:i+cols_per_row] for i in range(0, len(ma25_rows), cols_per_row)]
-            for row_group in rows_list:
-                cols = st.columns(cols_per_row)
-                for ci, (_, row) in enumerate(row_group.iterrows()):
-                    with cols[ci]:
-                        with st.container(border=True):
-                            buy_count = row.get("一致数", 0)
-                            grade = row.get("強度", "－")
-                            nichi = row.get("日足", "➖")
-                            ichi  = row.get("1時間足", "➖")
-                            go    = row.get("5分足", "➖")
-                            rsi   = row.get("RSI(日足)", "−")
-                            st.markdown(f"**{row['銘柄名']}**　`{row['コード']}`")
-                            st.write(f"日足:{nichi}　1h:{ichi}　5分:{go}　{grade}")
-                            st.caption(f"RSI:{rsi}　セクター:{row.get('セクター','')}")
-            st.divider()
+            show_ma25 = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","RSI(日足)","Stoch(日足)","ADX(日足)"]
+            show_ma25 = [c for c in show_ma25 if c in ma25_rows.columns]
+            st.dataframe(ma25_rows[show_ma25].reset_index(drop=True),
+                         use_container_width=True, hide_index=True)
         else:
             st.info("現在、25日線反発銘柄はありません。スキャンを実行してください。")
-            st.divider()
+        st.divider()
 
         sub_all,sub_1d,sub_1h,sub_5m,sub_strong = st.tabs(["🗒 全銘柄","📅 日足","⏱ 1時間足","⚡ 5分足","🏆 複数TF一致"])
         SHOW = ["銘柄名","コード","セクター","日足","1時間足","5分足","強度","MA25反発"]
