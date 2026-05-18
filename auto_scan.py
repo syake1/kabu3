@@ -1,21 +1,25 @@
 """
 auto_scan.py
-GitHub Actionsから呼ばれる自動スキャン＋メール送信スクリプト
+GitHub Actionsから呼ばれる自動スキャン＋メール送信＋スプレッドシート記録
 9時〜15時・1時間おきに実行
 """
 
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import json, os, smtplib
+import json, os, smtplib, gspread
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from google.oauth2.service_account import Credentials
 
 # ── 設定 ──────────────────────────────────────────────────────
 ALERT_TO   = "kamejirou1@gmail.com"
 GMAIL_USER = os.environ.get("GMAIL_USER", "")
 GMAIL_PASS = os.environ.get("GMAIL_PASS", "")
+
+SPREADSHEET_ID  = os.environ.get("SPREADSHEET_ID", "")   # GitHub Secrets に登録
+GOOGLE_CREDS_JSON = os.environ.get("GOOGLE_CREDENTIALS", "")  # GitHub Secrets に登録
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 TICKER_FILE = os.path.join(BASE_DIR, "kabu3_tickers.json")
@@ -53,9 +57,6 @@ def calc_indicators(df):
     df["Stoch_D"] = df["Stoch_K"].rolling(3).mean()
     return df
 
-def sma(a):
-    return sum(a) / len(a) if a else 0
-
 # ── マルチTFスキャン ────────────────────────────────────────────
 def scan_multi_tf(code, name):
     results = {}
@@ -77,29 +78,29 @@ def scan_multi_tf(code, name):
             last = df.iloc[-1]
             prev = df.iloc[-2]
 
-            ma5  = float(last["MA_5"])
-            ma25 = float(last["MA_25"])
-            ma75 = float(last["MA_75"])
+            ma5   = float(last["MA_5"])
+            ma25  = float(last["MA_25"])
+            ma75  = float(last["MA_75"])
             price = float(last["Close"])
             rsi   = float(last["RSI"])
-            macd_h = float(last["MACD_Hist"])
+            macd_h      = float(last["MACD_Hist"])
             macd_h_prev = float(prev["MACD_Hist"])
-            stoch = float(last["Stoch_K"])
+            stoch    = float(last["Stoch_K"])
             bb_lower = float(last["BB_Lower"])
             bb_upper = float(last["BB_Upper"])
 
-            uptrend  = price > ma75
+            uptrend   = price > ma75
             near_ma25 = abs(price - ma25) / ma25 < 0.08
-            macd_gc  = float(prev["MACD"]) <= float(prev["MACD_Signal"]) and float(last["MACD"]) > float(last["MACD_Signal"])
-            macd_up  = macd_h > macd_h_prev
-            stoch_gc = float(prev["Stoch_K"]) <= float(prev["Stoch_D"]) and stoch > float(last["Stoch_D"])
-            not_ob   = stoch < 70 and rsi < 65
+            macd_gc   = float(prev["MACD"]) <= float(prev["MACD_Signal"]) and float(last["MACD"]) > float(last["MACD_Signal"])
+            macd_up   = macd_h > macd_h_prev
+            stoch_gc  = float(prev["Stoch_K"]) <= float(prev["Stoch_D"]) and stoch > float(last["Stoch_D"])
+            not_ob    = stoch < 70 and rsi < 65
 
             buy  = uptrend and near_ma25 and (macd_gc or (stoch_gc and stoch < 40)) and macd_up and not_ob
             sell = rsi > 70 or price >= bb_upper * 0.99
 
             results[tf_label] = "🟢" if buy else "🔴" if sell else "➖"
-            results[f"RSI({tf_label})"]  = round(rsi, 1)
+            results[f"RSI({tf_label})"]   = round(rsi, 1)
             results[f"Stoch({tf_label})"] = round(stoch, 1)
         except Exception:
             results[tf_label] = "❓"
@@ -147,7 +148,7 @@ def scan_oshime(code, name):
         if price >= high52 * 0.95:
             return None
 
-        near_ma25 = abs(price - ma25) / ma25 * 100 <= 5.0
+        near_ma25   = abs(price - ma25) / ma25 * 100 <= 5.0
         macd_bottom = macd_h > macd_hp
 
         reasons = ["RSI売られすぎ", "BB下限タッチ"]
@@ -169,7 +170,7 @@ def scan_oshime(code, name):
 # ── メール送信 ─────────────────────────────────────────────────
 def send_mail(subject, body):
     if not GMAIL_USER or not GMAIL_PASS:
-        print("メール設定なし")
+        print("メール設定なし（GMAIL_USER / GMAIL_PASS 未設定）")
         return
     try:
         msg = MIMEMultipart()
@@ -184,58 +185,134 @@ def send_mail(subject, body):
     except Exception as e:
         print(f"❌ メール送信失敗: {e}")
 
+# ── スプレッドシート書き込み ────────────────────────────────────
+def write_to_spreadsheet(rows):
+    """
+    rows: list of dict
+      {"日時", "銘柄名", "コード", "1時間足", "5分足", "RSI(1時間足)", "Stoch(1時間足)"}
+    """
+    if not SPREADSHEET_ID or not GOOGLE_CREDS_JSON:
+        print("スプレッドシート設定なし（SPREADSHEET_ID / GOOGLE_CREDENTIALS 未設定）")
+        return
+    try:
+        import json as _json
+        creds_dict = _json.loads(GOOGLE_CREDS_JSON)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds  = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet  = client.open_by_key(SPREADSHEET_ID).sheet1
+
+        # ヘッダーが無ければ追加
+        existing = sheet.get_all_values()
+        if not existing:
+            sheet.append_row(["日時", "銘柄名", "コード", "1時間足", "5分足",
+                               "RSI(1h)", "Stoch(1h)"])
+
+        for r in rows:
+            sheet.append_row([
+                r.get("日時", ""),
+                r.get("銘柄名", ""),
+                r.get("コード", ""),
+                r.get("1時間足", ""),
+                r.get("5分足", ""),
+                r.get("RSI(1時間足)", ""),
+                r.get("Stoch(1時間足)", ""),
+            ])
+        print(f"✅ スプレッドシート書き込み完了: {len(rows)}件")
+    except Exception as e:
+        print(f"❌ スプレッドシート書き込み失敗: {e}")
+
 # ── メイン ─────────────────────────────────────────────────────
 def main():
-    now = datetime.now()
+    now      = datetime.now()
     time_str = now.strftime("%m/%d %H:%M")
     print(f"[{time_str}] 自動スキャン開始 対象:{len(TARGET)}銘柄")
 
-    buy_signals  = []
-    oshime_list  = []
+    buy_signals      = []   # マルチTF（2TF以上一致）
+    oshime_list      = []   # 押し目買い
+    daytrade_signals = []   # ⚡ デイトレ（1h＋5分 両方🟢）
 
     for i, (name, code) in enumerate(TARGET.items()):
         print(f"  {i+1}/{len(TARGET)} {name}", end="\r")
         try:
             tf_result = scan_multi_tf(code, name)
-            buy_count = sum(1 for k in ["日足","1時間足","5分足"] if tf_result.get(k)=="🟢")
-            ma25_bounce = tf_result.get("MA25反発", "") == "★"
 
+            h1  = tf_result.get("1時間足", "❓")
+            m5  = tf_result.get("5分足",   "❓")
+            day = tf_result.get("日足",    "❓")
+
+            # マルチTF（2TF以上）
+            buy_count = sum(1 for k in ["日足","1時間足","5分足"] if tf_result.get(k) == "🟢")
             if buy_count >= 2:
                 buy_signals.append({
                     "銘柄名": name, "コード": code,
-                    "日足": tf_result.get("日足","❓"),
-                    "1時間足": tf_result.get("1時間足","❓"),
-                    "5分足": tf_result.get("5分足","❓"),
+                    "日足": day, "1時間足": h1, "5分足": m5,
                     "一致数": buy_count,
                     "RSI": tf_result.get("RSI(日足)", "−"),
                 })
 
+            # ⚡ デイトレ（1時間足＋5分足が両方🟢）
+            if h1 == "🟢" and m5 == "🟢":
+                daytrade_signals.append({
+                    "日時":       time_str,
+                    "銘柄名":     name,
+                    "コード":     code,
+                    "1時間足":    h1,
+                    "5分足":      m5,
+                    "RSI(1時間足)":   tf_result.get("RSI(1時間足)", "−"),
+                    "Stoch(1時間足)": tf_result.get("Stoch(1時間足)", "−"),
+                })
+
+            # 押し目
             r = scan_oshime(code, name)
             if r:
                 oshime_list.append(r)
-        except Exception as e:
+
+        except Exception:
             pass
 
-    print(f"\nマルチTF買い:{len(buy_signals)}銘柄  押し目:{len(oshime_list)}銘柄")
+    print(f"\nマルチTF買い:{len(buy_signals)}銘柄  押し目:{len(oshime_list)}銘柄  デイトレ:{len(daytrade_signals)}銘柄")
 
-    if not buy_signals and not oshime_list:
+    # ── スプレッドシートに記録（デイトレのみ）──────────────────
+    if daytrade_signals:
+        write_to_spreadsheet(daytrade_signals)
+
+    # ── シグナルゼロなら何もしない ────────────────────────────
+    if not buy_signals and not oshime_list and not daytrade_signals:
         print("シグナルなし → メール送信なし")
         return
 
-    # メール本文作成
+    # ── メール本文作成 ─────────────────────────────────────────
     lines = [f"📈 自動スキャン結果  {time_str}", ""]
 
+    # ⚡ デイトレセクション
+    if daytrade_signals:
+        lines.append("=" * 40)
+        lines.append("⚡ デイトレ買いシグナル（1h＋5分 両方🟢）")
+        lines.append("=" * 40)
+        for r in daytrade_signals:
+            lines.append(f"【{r['銘柄名']}】 ({r['コード']})")
+            lines.append(f"  1時間足:{r['1時間足']}  5分足:{r['5分足']}")
+            lines.append(f"  RSI(1h):{r['RSI(1時間足)']}  Stoch(1h):{r['Stoch(1時間足)']}")
+            lines.append(f"  検出時刻: {r['日時']}")
+        lines.append("")
+
+    # 🔥 マルチTFセクション
     if buy_signals:
         lines.append("=" * 40)
         lines.append("🔥 マルチTF買いシグナル（2TF以上一致）")
         lines.append("=" * 40)
         for r in sorted(buy_signals, key=lambda x: -x["一致数"]):
-            star = "★★★" if r["一致数"]==3 else "★★☆"
+            star = "★★★" if r["一致数"] == 3 else "★★☆"
             lines.append(f"【{star}】{r['銘柄名']} ({r['コード']})")
             lines.append(f"  日足:{r['日足']} 1h:{r['1時間足']} 5分:{r['5分足']}  RSI:{r['RSI']}")
-
-    if oshime_list:
         lines.append("")
+
+    # 📉 押し目セクション
+    if oshime_list:
         lines.append("=" * 40)
         lines.append("📉 押し目買いシグナル（RSI売られすぎ＋BB下限）")
         lines.append("=" * 40)
@@ -244,12 +321,13 @@ def main():
             lines.append(f"  株価:¥{r['株価']:,}  RSI:{r['RSI']}")
             lines.append(f"  エントリー:¥{r['エントリー']:,}  損切り:¥{r['損切り']:,}  利確:¥{r['利確目標']:,}")
             lines.append(f"  根拠:{r['根拠']}")
+        lines.append("")
 
-    lines.append("")
     lines.append("⚠️ 投資判断はご自身の責任でお願いします。")
 
-    body = "\n".join(lines)
-    subject = f"📈 買いシグナル {time_str} ({len(buy_signals)+len(oshime_list)}件)"
+    body    = "\n".join(lines)
+    total   = len(buy_signals) + len(oshime_list) + len(daytrade_signals)
+    subject = f"📈 買いシグナル {time_str} ({total}件)"
     send_mail(subject, body)
 
 if __name__ == "__main__":
