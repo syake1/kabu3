@@ -68,6 +68,39 @@ function installPWA() {
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 TICKER_FILE   = os.path.join(BASE_DIR, "kabu3_tickers.json")
 TRACKING_FILE = os.path.join(BASE_DIR, "kabu3_tracking.csv")
+RESULTS_FILE  = os.path.join(BASE_DIR, "kabu3_results.json")   # ★ 結果永続化
+
+# ── 結果の保存・読み込み（スマホリロード対策）────────────────
+def save_results():
+    """スキャン結果をファイルに保存してリロード後も復元できるようにする"""
+    try:
+        data = {}
+        for key in ['scan_results', 'sector_stats', 'oshime_results', 'daytrade_results', 'bulk_results']:
+            if key in st.session_state:
+                data[key] = st.session_state[key]
+        data['saved_at'] = datetime.now().strftime("%Y/%m/%d %H:%M")
+        with open(RESULTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, default=str)
+    except Exception as e:
+        pass
+
+def load_results():
+    """起動時にファイルから前回の結果を復元する"""
+    if not os.path.exists(RESULTS_FILE):
+        return
+    try:
+        with open(RESULTS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        for key in ['scan_results', 'sector_stats', 'oshime_results', 'daytrade_results', 'bulk_results']:
+            if key in data and key not in st.session_state:
+                st.session_state[key] = data[key]
+        if 'saved_at' in data:
+            st.session_state['last_saved_at'] = data['saved_at']
+    except Exception:
+        pass
+
+# アプリ起動時に前回結果を復元
+load_results()
 
 DEFAULT_TICKERS = {
     "半導体・電子部品": {
@@ -221,35 +254,38 @@ def save_tracking(df):
 # ── メール送信 ──────────────────────────────────────────────
 ALERT_TO = "kamejirou1@gmail.com"
 
-def send_buy_alert(signal_rows, oshime_rows):
+def send_buy_alert(signal_rows, oshime_rows, daytrade_rows=None):
     try:
         gmail_user = st.secrets["gmail_user"]
         gmail_pass = st.secrets["gmail_pass"]
     except Exception:
         return False, "Secretsが未設定です"
 
-    if not signal_rows and not oshime_rows:
+    daytrade_rows = daytrade_rows or []
+    if not signal_rows and not oshime_rows and not daytrade_rows:
         return False, "通知対象なし"
 
     today = datetime.now().strftime("%Y年%m月%d日 %H:%M")
     lines = ["📈 株式買いシグナル通知  " + today, ""]
 
+    if daytrade_rows:
+        lines.append("=" * 38)
+        lines.append("⚡ デイトレ買いシグナル（1h＋5分）")
+        lines.append("=" * 38)
+        for r in daytrade_rows:
+            lines.append(f"【{r.get('銘柄名','')}】 ({r.get('コード','')})")
+            lines.append(f"  1時間足:{r.get('1時間足','')}  5分足:{r.get('5分足','')}  RSI(1h):{r.get('RSI(1時間足)','')}")
+            lines.append(f"  検出時刻: {r.get('日時','')}")
+
     if signal_rows:
+        lines.append("")
         lines.append("=" * 38)
         lines.append("🔥 マルチTF買いシグナル")
         lines.append("=" * 38)
         for r in signal_rows:
-            grade  = r.get("強度", "")
-            name   = r.get("銘柄名", "")
-            code   = r.get("コード", "")
-            nichi  = r.get("日足", "")
-            ichi   = r.get("1時間足", "")
-            go_    = r.get("5分足", "")
-            rsi    = r.get("RSI(日足)", "−")
-            ma25   = r.get("MA25反発", "")
-            lines.append("【" + grade + "】" + name + " (" + code + ")")
-            lines.append("  日足:" + str(nichi) + " 1h:" + str(ichi) + " 5分:" + str(go_))
-            lines.append("  RSI:" + str(rsi) + "  " + str(ma25))
+            lines.append(f"【{r.get('強度','')}】{r.get('銘柄名','')} ({r.get('コード','')})")
+            lines.append(f"  日足:{r.get('日足','')} 1h:{r.get('1時間足','')} 5分:{r.get('5分足','')}")
+            lines.append(f"  RSI:{r.get('RSI(日足)','−')}  {r.get('MA25反発','')}")
 
     if oshime_rows:
         lines.append("")
@@ -257,20 +293,10 @@ def send_buy_alert(signal_rows, oshime_rows):
         lines.append("📉 押し目買いシグナル")
         lines.append("=" * 38)
         for r in oshime_rows:
-            hantei  = r.get("判定", "")
-            name    = r.get("銘柄名", "")
-            code    = r.get("コード", "")
-            kakaku  = r.get("株価", 0)
-            oshime  = r.get("押し目幅", "")
-            support = r.get("サポート", "")
-            entry   = r.get("エントリー", 0)
-            stop    = r.get("損切り", 0)
-            target  = r.get("利確目標", 0)
-            reason  = r.get("根拠", "")
-            lines.append("【" + hantei + "】" + name + " (" + code + ")")
-            lines.append("  株価:¥" + str(kakaku) + "  押し目:" + oshime + "  サポート:" + support)
-            lines.append("  エントリー:¥" + str(entry) + "  損切り:¥" + str(stop) + "  利確:¥" + str(target))
-            lines.append("  根拠: " + reason)
+            lines.append(f"【{r.get('判定','')}】{r.get('銘柄名','')} ({r.get('コード','')})")
+            lines.append(f"  株価:¥{r.get('株価',0)}  RSI:{r.get('RSI','')}")
+            lines.append(f"  エントリー:¥{r.get('エントリー',0)}  損切り:¥{r.get('損切り',0)}  利確:¥{r.get('利確目標',0)}")
+            lines.append(f"  根拠: {r.get('根拠','')}")
 
     lines.append("")
     lines.append("⚠️ 投資判断はご自身の責任でお願いします。")
@@ -285,7 +311,8 @@ def send_buy_alert(signal_rows, oshime_rows):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, ALERT_TO, msg.as_string())
-        return True, str(len(signal_rows) + len(oshime_rows)) + "件のシグナルを送信しました"
+        total = len(signal_rows) + len(oshime_rows) + len(daytrade_rows)
+        return True, f"{total}件のシグナルを送信しました"
     except Exception as e:
         return False, str(e)
 
@@ -381,7 +408,7 @@ def calculate_indicators(df, bb_std=2.0):
     df['MA25_Bounce'] = df['MA25_Touch'].rolling(5).max().fillna(False).astype(bool) & (c > df['MA_25'])
     return df
 
-# ── 押し目買いスキャナー ──────────────────────────────────────
+# ── 押し目買いスキャナー（日足）──────────────────────────────
 def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0):
     try:
         df = yf.download(code, period="6mo", interval="1d", progress=False)
@@ -408,26 +435,20 @@ def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0
         vol      = float(df['Volume'].iloc[-1])
         vol_avg  = float(df['Volume'].iloc[-20:].mean())
 
-        uptrend = ma5 > ma25 > ma75
-        if not uptrend:
+        if not (ma5 > ma25 > ma75):
+            return None
+        if float(df['RSI'].iloc[-5:].min()) > 32:
+            return None
+        if not (rsi > rsi_prev or rsi > rsi_prev2):
             return None
 
-        rsi_min5 = float(df['RSI'].iloc[-5:].min())
-        if rsi_min5 > 32:
-            return None
-
-        rsi_rebounding = rsi > rsi_prev or rsi > rsi_prev2
-        if not rsi_rebounding:
-            return None
-
-        bb_touched = False
-        for i in range(-5, 0):
-            low_i  = float(df['Low'].iloc[i])
-            bb_l_i = float(df['BB_Lower'].iloc[i])
-            if low_i <= bb_l_i * 1.01:
-                bb_touched = True
-                break
+        bb_touched = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
+                         for i in range(-5, 0))
         if not bb_touched:
+            return None
+
+        high52 = float(df['High'].iloc[-252:].max()) if len(df) >= 252 else float(df['High'].max())
+        if price >= high52 * 0.95:
             return None
 
         near_ma25 = abs(price - ma25) / ma25 * 100 <= 5.0
@@ -435,44 +456,35 @@ def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0
         support_level = "MA25" if near_ma25 else ("MA5" if near_ma5 else "BB下限")
         macd_bottom = macd_hist > macd_hist_prev
 
-        high52 = float(df['High'].iloc[-252:].max()) if len(df) >= 252 else float(df['High'].max())
-        if price >= high52 * 0.95:
-            return None
-
-        score = 0
-        reasons = []
+        score = 0; reasons = []
         score += 4; reasons.append("RSI売られすぎ圏タッチ")
         score += 3; reasons.append("BB下限タッチ")
-        if rsi_rebounding:      score += 2; reasons.append("RSI反発中")
+        if rsi > rsi_prev or rsi > rsi_prev2: score += 2; reasons.append("RSI反発中")
         if macd_bottom:         score += 2; reasons.append("MACD底打ち")
         if near_ma25:           score += 2; reasons.append("MA25付近")
         if vol > vol_avg * 1.5: score += 1; reasons.append("出来高急増")
 
-        grade = ("🟢 絶好の押し目" if score >= 10 else
-                 "🟡 押し目候補"   if score >= 7  else
-                 "⬜ 参考")
-
+        grade = ("🟢 絶好の押し目" if score >= 10 else "🟡 押し目候補" if score >= 7 else "⬜ 参考")
         high20 = float(df['High'].iloc[-20:].max())
-        entry  = round(price, 1)
-        stop   = round(bb_lower * 0.98, 1)
-        target = round(ma25 * 1.10, 1)
 
         return {
             "銘柄名": name, "コード": code,
             "株価": round(price, 1), "BB下限": round(bb_lower, 1),
-            "RSI": round(rsi, 1), "RSI最小": round(rsi_min5, 1),
-            "サポート": support_level, "出来高比": str(round(vol/vol_avg, 1)) + "x",
+            "RSI": round(rsi, 1), "RSI最小": round(float(df['RSI'].iloc[-5:].min()), 1),
+            "サポート": support_level, "出来高比": f"{round(vol/vol_avg,1)}x",
             "MACDボトム": "✓" if macd_bottom else "－",
             "スコア": score, "判定": grade,
-            "エントリー": entry, "損切り": stop, "利確目標": target,
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.98, 1),
+            "利確目標": round(ma25 * 1.10, 1),
             "根拠": " / ".join(reasons),
-            "押し目幅": str(round((high20 - price) / high20 * 100, 1)) + "%",
+            "押し目幅": f"{round((high20 - price) / high20 * 100, 1)}%",
             "直近高値": round(high20, 1),
         }
     except Exception:
         return None
 
-
+# ── デイトレ押し目スキャナー（1時間足）───────────────────────
 def scan_oshime_1h(code, name):
     try:
         df = yf.download(code, period="30d", interval="1h", progress=False)
@@ -488,32 +500,24 @@ def scan_oshime_1h(code, name):
         price = float(last['Close'])
         ma25  = float(last['MA_25'])
         rsi   = float(last['RSI'])
-        rsi_prev = float(prev['RSI'])
-        bb_lower = float(last['BB_Lower'])
-        macd_hist      = float(last['MACD_Hist'])
-        macd_hist_prev = float(prev['MACD_Hist'])
+        rsi_prev    = float(prev['RSI'])
+        bb_lower    = float(last['BB_Lower'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
 
         rsi_min = float(df['RSI'].iloc[-8:].min())
-        if rsi_min > 35:
+        if rsi_min > 35 or not (rsi > rsi_prev):
             return None
-        if not (rsi > rsi_prev):
-            return None
-
-        bb_touch = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
-                       for i in range(-8, 0))
-        if not bb_touch:
+        if not any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01 for i in range(-8, 0)):
             return None
 
-        macd_bottom = macd_hist > macd_hist_prev
+        macd_bottom = macd_hist > macd_hist_p
         near_ma25   = abs(price - ma25) / ma25 * 100 <= 5.0
 
-        score = 4
-        reasons = ["RSI売られすぎ(1h)", "BB下限(1h)"]
+        score = 4; reasons = ["RSI売られすぎ(1h)", "BB下限(1h)"]
         if macd_bottom: score += 2; reasons.append("MACD底打ち(1h)")
         if near_ma25:   score += 2; reasons.append("MA25付近(1h)")
         if rsi < 32:    score += 1; reasons.append("RSI深め")
-
-        grade = "🟢 絶好(1h)" if score >= 7 else "🟡 候補(1h)"
 
         return {
             "銘柄名": name, "コード": code, "時間軸": "1時間足",
@@ -521,7 +525,7 @@ def scan_oshime_1h(code, name):
             "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
             "サポート": "MA25" if near_ma25 else "BB下限",
             "MACDボトム": "✓" if macd_bottom else "－",
-            "スコア": score, "判定": grade,
+            "スコア": score, "判定": "🟢 絶好(1h)" if score >= 7 else "🟡 候補(1h)",
             "エントリー": round(price, 1),
             "損切り": round(bb_lower * 0.98, 1),
             "利確目標": round(price * 1.03, 1),
@@ -530,7 +534,7 @@ def scan_oshime_1h(code, name):
     except Exception:
         return None
 
-
+# ── デイトレ押し目スキャナー（5分足）────────────────────────
 def scan_oshime_5m(code, name):
     try:
         df = yf.download(code, period="5d", interval="5m", progress=False)
@@ -546,31 +550,23 @@ def scan_oshime_5m(code, name):
         price = float(last['Close'])
         ma25  = float(last['MA_25'])
         rsi   = float(last['RSI'])
-        rsi_prev = float(prev['RSI'])
-        bb_lower = float(last['BB_Lower'])
-        macd_hist      = float(last['MACD_Hist'])
-        macd_hist_prev = float(prev['MACD_Hist'])
+        rsi_prev    = float(prev['RSI'])
+        bb_lower    = float(last['BB_Lower'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
 
         rsi_min = float(df['RSI'].iloc[-12:].min())
-        if rsi_min > 32:
+        if rsi_min > 32 or not (rsi > rsi_prev):
             return None
-        if not (rsi > rsi_prev):
-            return None
-
-        bb_touch = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
-                       for i in range(-12, 0))
-        if not bb_touch:
+        if not any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01 for i in range(-12, 0)):
             return None
 
-        macd_bottom = macd_hist > macd_hist_prev
+        macd_bottom = macd_hist > macd_hist_p
         near_ma25   = abs(price - ma25) / ma25 * 100 <= 3.0
 
-        score = 4
-        reasons = ["RSI売られすぎ(5m)", "BB下限(5m)"]
+        score = 4; reasons = ["RSI売られすぎ(5m)", "BB下限(5m)"]
         if macd_bottom: score += 2; reasons.append("MACD底打ち(5m)")
         if near_ma25:   score += 2; reasons.append("MA25付近(5m)")
-
-        grade = "🟢 絶好(5m)" if score >= 7 else "🟡 候補(5m)"
 
         return {
             "銘柄名": name, "コード": code, "時間軸": "5分足",
@@ -578,7 +574,7 @@ def scan_oshime_5m(code, name):
             "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
             "サポート": "MA25" if near_ma25 else "BB下限",
             "MACDボトム": "✓" if macd_bottom else "－",
-            "スコア": score, "判定": grade,
+            "スコア": score, "判定": "🟢 絶好(5m)" if score >= 7 else "🟡 候補(5m)",
             "エントリー": round(price, 1),
             "損切り": round(bb_lower * 0.99, 1),
             "利確目標": round(price * 1.015, 1),
@@ -674,11 +670,9 @@ def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_fi
     adx_val   = round(float(last['ADX']),    1) if not np.isnan(last['ADX'])     else None
     ma25_b    = bool(last['MA25_Bounce'])
     if last['Buy_Signal']:
-        sig_time = get_signal_time(df, 'Buy_Signal', tf)
-        return "🟢", rsi_val, stoch_val, adx_val, ma25_b, sig_time
+        return "🟢", rsi_val, stoch_val, adx_val, ma25_b, get_signal_time(df, 'Buy_Signal', tf)
     if last['Sell_Signal']:
-        sig_time = get_signal_time(df, 'Sell_Signal', tf)
-        return "🔴", rsi_val, stoch_val, adx_val, ma25_b, sig_time
+        return "🔴", rsi_val, stoch_val, adx_val, ma25_b, get_signal_time(df, 'Sell_Signal', tf)
     return "➖", rsi_val, stoch_val, adx_val, ma25_b, None
 
 TF_CONFIG = {
@@ -686,15 +680,6 @@ TF_CONFIG = {
     "1時間足": {"tf": "1h",  "period": "3mo"},
     "5分足":   {"tf": "5m",  "period": "5d"},
 }
-
-@st.cache_data(ttl=300)
-def get_chart_data(code):
-    df = load_data(code, "6mo", "1d")
-    if df.empty:
-        return None
-    df = calculate_indicators(df)
-    df = detect_signals(df)
-    return df
 
 @st.cache_data(ttl=180)
 def load_chart_data(code, interval, period):
@@ -768,14 +753,19 @@ def render_chart(df, name, code, tf_label, entry=None, stop=None, target=None):
     st.plotly_chart(fig, use_container_width=True)
 
 def draw_chart(code, name, entry=None, stop=None, target=None, default_tf="日足"):
+    """
+    ★ 修正: default_tf で最初に表示する時間軸を指定できる
+      デイトレ1h → default_tf="1時間足"
+      デイトレ5m → default_tf="5分足"
+      それ以外   → default_tf="日足"
+    """
     tf_options = {"日足": ("1d","6mo"), "1時間足": ("1h","1mo"), "5分足": ("5m","5d")}
     key_prefix = f"tf_{code}_{name}"
-    cols = st.columns(3)
-    tf_labels = list(tf_options.keys())
-    state_key = f"chart_tf_{code}"
+    state_key  = f"chart_tf_{code}"
     if state_key not in st.session_state:
         st.session_state[state_key] = default_tf
-    for i, tf_label in enumerate(tf_labels):
+    cols = st.columns(3)
+    for i, tf_label in enumerate(list(tf_options.keys())):
         btn_type = "primary" if st.session_state[state_key] == tf_label else "secondary"
         if cols[i].button(tf_label, key=f"{key_prefix}_{tf_label}", type=btn_type, use_container_width=True):
             st.session_state[state_key] = tf_label
@@ -787,19 +777,17 @@ def draw_chart(code, name, entry=None, stop=None, target=None, default_tf="日�
 
 # ── タイトル ──────────────────────────────────────────────────
 st.title("📡 kabu3 Pro")
-st.caption("マルチTFスキャン ｜ 押し目買いスキャナー ｜ セクターローテーション ｜ 勝率トラッキング")
+st.caption("マルチTFスキャン ｜ 押し目買いスキャナー ｜ デイトレ ｜ セクターローテーション ｜ 勝率トラッキング")
+
+# 前回の保存時刻を表示
+if 'last_saved_at' in st.session_state:
+    st.caption(f"📂 前回スキャン: {st.session_state['last_saved_at']}（リロード後も復元済み）")
 
 # ── サイドバー ────────────────────────────────────────────────
 selected_sectors = []
-rsi_ob = 70
-rsi_os = 30
-bb_std = 2.0
-sensitivity = "標準"
-trend_filter = True
-dmi_filter = False
-pb_min = 3.0
-pb_max = 15.0
-pb_near = 3.0
+rsi_ob = 70; rsi_os = 30; bb_std = 2.0
+sensitivity = "標準"; trend_filter = True; dmi_filter = False
+pb_min = 3.0; pb_max = 15.0; pb_near = 3.0
 
 with st.sidebar:
     st.header("⚙️ スキャン設定")
@@ -829,9 +817,190 @@ else:
 total_stocks = len(target_tickers)
 
 # ── タブ ─────────────────────────────────────────────────────
-tab_oshime, tab_daytrade, tab_scan, tab_result, tab_chart, tab_sector, tab_winrate, tab_manage = st.tabs([
-    "📉 押し目(日足)", "⚡ デイトレ", "🔍 スキャン", "📊 結果詳細", "📈 チャート", "🌀 セクター", "🏆 勝率", "➕ 銘柄管理"
+tab_bulk, tab_oshime, tab_daytrade, tab_scan, tab_result, tab_chart, tab_sector, tab_winrate, tab_manage = st.tabs([
+    "🚀 全スキャン一括", "📉 押し目(日足)", "⚡ デイトレ", "🔍 スキャン", "📊 結果詳細", "📈 チャート", "🌀 セクター", "🏆 勝率", "➕ 銘柄管理"
 ])
+
+# ═══════════════ タブ0: 全スキャン一括 ════════════════════════
+with tab_bulk:
+    st.subheader("🚀 全スキャン一括実行")
+    st.caption("デイトレ・押し目・マルチTFを1回のループでまとめてスキャンします")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("対象銘柄", f"{total_stocks}銘柄")
+    col2.metric("スキャン種別", "3種類")
+    col3.metric("時間軸", "日・1h・5分")
+    col4.metric("メール通知", "シグナル時自動")
+
+    if st.button("🚀 全スキャン一括開始", use_container_width=True, key="bulk_btn", type="primary"):
+        for k in ['bulk_results', 'scan_results', 'sector_stats', 'oshime_results', 'daytrade_results']:
+            st.session_state.pop(k, None)
+
+        bulk_results = {
+            "daytrade_both": [],   # 1h＋5分 両方🟢
+            "daytrade_1h":   [],
+            "daytrade_5m":   [],
+            "oshime":        [],
+            "scan":          [],
+            "sector_stats":  {},
+        }
+        time_str = datetime.now().strftime("%m/%d %H:%M")
+        code_to_sector = {c: sec for sec, d in st.session_state['tickers'].items() for n, c in d.items()}
+
+        prog  = st.progress(0, text="スキャン中...")
+        stbox = st.empty()
+
+        for i, (name, code) in enumerate(target_tickers.items()):
+            stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
+
+            # ① デイトレ（1h・5m）
+            r1h = scan_oshime_1h(code, name)
+            r5m = scan_oshime_5m(code, name)
+            if r1h: bulk_results["daytrade_1h"].append(r1h)
+            if r5m: bulk_results["daytrade_5m"].append(r5m)
+            if r1h and r5m:
+                bulk_results["daytrade_both"].append({
+                    "日時": time_str, "銘柄名": name, "コード": code,
+                    "1時間足": "🟢", "5分足": "🟢",
+                    "RSI(1時間足)": r1h.get("RSI",""),
+                    "Stoch(1時間足)": "",
+                })
+
+            # ② 押し目（日足）
+            ro = scan_oshime(code, name, pb_min, pb_max, pb_near)
+            if ro: bulk_results["oshime"].append(ro)
+
+            # ③ マルチTFスキャン
+            row = {"銘柄名": name, "コード": code, "セクター": code_to_sector.get(code,"その他")}
+            for tf_label, cfg in TF_CONFIG.items():
+                sig, rsi_v, stoch_v, adx_v, ma25_b, sig_time = scan_one(
+                    code, cfg["tf"], cfg["period"], rsi_ob, rsi_os,
+                    sensitivity, trend_filter, dmi_filter, bb_std)
+                row[tf_label]              = sig
+                row[f"RSI({tf_label})"]   = rsi_v
+                row[f"Stoch({tf_label})"] = stoch_v
+                row[f"ADX({tf_label})"]   = adx_v
+                row[f"時刻({tf_label})"]  = sig_time or "" if sig == "🟢" else ""
+                if tf_label == "日足":
+                    row["MA25反発"] = "★" if ma25_b else ""
+            buy_count = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
+            row["一致数"] = buy_count
+            row["強度"]   = "★★★" if buy_count==3 else "★★☆" if buy_count==2 else "★☆☆" if buy_count==1 else "－"
+            bulk_results["scan"].append(row)
+
+            # セクター統計
+            sec = row["セクター"]
+            if sec not in bulk_results["sector_stats"]:
+                bulk_results["sector_stats"][sec] = {"total":0,"buy":0,"sell":0,"star3":0}
+            bulk_results["sector_stats"][sec]["total"] += 1
+            if buy_count >= 1: bulk_results["sector_stats"][sec]["buy"] += 1
+            if buy_count == 3: bulk_results["sector_stats"][sec]["star3"] += 1
+            if any(row[tfl]=="🔴" for tfl in TF_CONFIG): bulk_results["sector_stats"][sec]["sell"] += 1
+
+            prog.progress((i+1)/total_stocks, text=f"{i+1}/{total_stocks}")
+
+        prog.progress(1.0, text="✅ 完了！")
+        stbox.success(f"✅ {total_stocks}銘柄スキャン完了！")
+
+        # session_stateに格納
+        st.session_state['bulk_results']   = bulk_results
+        st.session_state['scan_results']   = bulk_results["scan"]
+        st.session_state['sector_stats']   = bulk_results["sector_stats"]
+        st.session_state['oshime_results'] = bulk_results["oshime"]
+        st.session_state['daytrade_results'] = {
+            "1h": bulk_results["daytrade_1h"],
+            "5m": bulk_results["daytrade_5m"],
+        }
+
+        # ★ ファイルに保存（スマホリロード対策）
+        save_results()
+
+        # メール送信
+        dt_mail    = bulk_results["daytrade_both"]
+        multi_mail = [r for r in bulk_results["scan"] if r.get("一致数",0) >= 2]
+        oshi_mail  = [r for r in bulk_results["oshime"] if r.get("スコア",0) >= 7]
+        if dt_mail or multi_mail or oshi_mail:
+            ok, msg = send_buy_alert(multi_mail, oshi_mail, dt_mail)
+            if ok:
+                st.success(f"📧 メール送信完了！ {msg}")
+            else:
+                st.warning(f"📧 メール未送信: {msg}")
+
+        # 勝率トラッキング記録
+        if bulk_results["oshime"]:
+            df_track = load_tracking()
+            today = datetime.now().strftime("%Y-%m-%d")
+            new_rows = [{"日付":today,"コード":r["コード"],"銘柄名":r["銘柄名"],"種別":"押し目買い",
+                         "記録時株価":r["株価"],"3日後":"","5日後":"","3日騰落率":"","勝敗":"追跡中"}
+                        for r in bulk_results["oshime"] if r["スコア"] >= 6
+                        and (df_track.empty or not ((df_track["日付"]==today)&(df_track["コード"]==r["コード"])).any())]
+            if new_rows:
+                df_track = pd.concat([df_track, pd.DataFrame(new_rows)], ignore_index=True)
+                save_tracking(df_track)
+
+    # 結果表示
+    if 'bulk_results' in st.session_state:
+        br = st.session_state['bulk_results']
+        dt_both = br.get("daytrade_both", [])
+        oshime  = br.get("oshime", [])
+        scan    = br.get("scan", [])
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("⚡ デイトレ両TF", f"{len(dt_both)}銘柄")
+        m2.metric("📉 押し目", f"{len(oshime)}銘柄")
+        m3.metric("🔥 マルチTF★★★", f"{len([r for r in scan if r.get('一致数')==3])}銘柄")
+        m4.metric("🔥 マルチTF★★☆", f"{len([r for r in scan if r.get('一致数')==2])}銘柄")
+
+        st.divider()
+
+        if dt_both:
+            st.markdown("### ⚡ デイトレ最強シグナル（1h＋5分 両方🟢）")
+            for r in dt_both:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3,1])
+                    c1.markdown(f"**{r['銘柄名']}** `{r['コード']}`　🔥 両TF一致")
+                    c1.write(f"RSI(1h): {r.get('RSI(1時間足)','')}　検出: {r.get('日時','')}")
+                    if c2.button("📊 チャート", key=f"bulk_dt_{r['コード']}"):
+                        st.session_state['bulk_chart'] = {"code": r['コード'], "name": r['銘柄名'], "tf": "1時間足"}
+
+        if oshime:
+            st.divider()
+            st.markdown("### 📉 押し目買い候補")
+            best = [r for r in oshime if "絶好" in r.get("判定","")]
+            if best:
+                for r in best:
+                    with st.container(border=True):
+                        c1, c2 = st.columns([3,1])
+                        c1.markdown(f"**{r['銘柄名']}** `{r['コード']}`　{r['判定']}")
+                        c1.write(f"サポート:{r['サポート']}  RSI:{r['RSI']}  根拠:{r['根拠']}")
+                        c2.metric("株価", f"¥{r['株価']:,}")
+                        if c2.button("📊 チャート", key=f"bulk_os_{r['コード']}"):
+                            st.session_state['bulk_chart'] = {"code": r['コード'], "name": r['銘柄名'],
+                                                              "entry": r['エントリー'], "stop": r['損切り'],
+                                                              "target": r['利確目標'], "tf": "日足"}
+
+        str3 = [r for r in scan if r.get("一致数")==3]
+        str2 = [r for r in scan if r.get("一致数")==2]
+        if str3 or str2:
+            st.divider()
+            st.markdown("### 🔥 マルチTF買いシグナル")
+            for r in str3 + str2:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3,1])
+                    c1.markdown(f"**{r['銘柄名']}** `{r['コード']}`　{r['強度']}")
+                    c1.write(f"日足:{r['日足']} 1h:{r['1時間足']} 5分:{r['5分足']}  {r.get('MA25反発','')}")
+                    if c2.button("📊 チャート", key=f"bulk_sc_{r['コード']}"):
+                        st.session_state['bulk_chart'] = {"code": r['コード'], "name": r['銘柄名'], "tf": "日足"}
+
+        if 'bulk_chart' in st.session_state:
+            bc = st.session_state['bulk_chart']
+            st.divider()
+            st.markdown(f"#### 📈 {bc['name']} チャート")
+            draw_chart(bc['code'], bc['name'],
+                       entry=bc.get('entry'), stop=bc.get('stop'), target=bc.get('target'),
+                       default_tf=bc.get('tf', '日足'))
+
+        st.info("👉 各タブ（押し目・デイトレ・スキャン）でも詳細を確認できます")
 
 # ═══════════════ タブ1: 押し目買いスキャナー ══════════════════
 with tab_oshime:
@@ -852,13 +1021,13 @@ with tab_oshime:
         for i, (name, code) in enumerate(target_tickers.items()):
             stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
             r = scan_oshime(code, name, pb_min, pb_max, pb_near)
-            if r:
-                oshime_results.append(r)
+            if r: oshime_results.append(r)
             prog.progress((i+1)/total_stocks, text=f"{i+1}/{total_stocks}")
 
         prog.progress(1.0, text="✅ 完了！")
         stbox.success(f"✅ 完了！  押し目候補: {len(oshime_results)}銘柄")
         st.session_state['oshime_results'] = oshime_results
+        save_results()  # ★ 保存
 
         best_oshime = [r for r in oshime_results if r.get("スコア",0) >= 7]
         if best_oshime:
@@ -871,19 +1040,12 @@ with tab_oshime:
         if oshime_results:
             df_track = load_tracking()
             today = datetime.now().strftime("%Y-%m-%d")
-            new_rows = []
-            for r in oshime_results:
-                if r["スコア"] >= 6:
-                    code = r["コード"]
-                    if df_track.empty or not ((df_track["日付"]==today)&(df_track["コード"]==code)).any():
-                        new_rows.append({
-                            "日付": today, "コード": code, "銘柄名": r["銘柄名"],
-                            "種別": "押し目買い", "記録時株価": r["株価"],
-                            "3日後":"","5日後":"","3日騰落率":"","勝敗":"追跡中"
-                        })
+            new_rows = [{"日付":today,"コード":r["コード"],"銘柄名":r["銘柄名"],"種別":"押し目買い",
+                         "記録時株価":r["株価"],"3日後":"","5日後":"","3日騰落率":"","勝敗":"追跡中"}
+                        for r in oshime_results if r["スコア"] >= 6
+                        and (df_track.empty or not ((df_track["日付"]==today)&(df_track["コード"]==r["コード"])).any())]
             if new_rows:
-                df_new = pd.DataFrame(new_rows)
-                df_track = pd.concat([df_track, df_new], ignore_index=True)
+                df_track = pd.concat([df_track, pd.DataFrame(new_rows)], ignore_index=True)
                 save_tracking(df_track)
                 st.info(f"📝 {len(new_rows)}銘柄を勝率トラッキングに記録しました")
 
@@ -911,9 +1073,9 @@ with tab_oshime:
                         c1.caption(f"根拠: {row['根拠']}")
                         c2.metric("株価", f"¥{row['株価']:,}")
                         e1, e2, e3 = st.columns(3)
-                        e1.metric("エントリー",  f"¥{row['エントリー']:,.0f}")
-                        e2.metric("損切り",      f"¥{row['損切り']:,.1f}", delta=f"−{((row['エントリー']-row['損切り'])/row['エントリー']*100):.1f}%", delta_color="inverse")
-                        e3.metric("利確目標",    f"¥{row['利確目標']:,.0f}", delta=f"+{((row['利確目標']-row['エントリー'])/row['エントリー']*100):.1f}%")
+                        e1.metric("エントリー", f"¥{row['エントリー']:,.0f}")
+                        e2.metric("損切り",     f"¥{row['損切り']:,.1f}", delta=f"−{((row['エントリー']-row['損切り'])/row['エントリー']*100):.1f}%", delta_color="inverse")
+                        e3.metric("利確目標",   f"¥{row['利確目標']:,.0f}", delta=f"+{((row['利確目標']-row['エントリー'])/row['エントリー']*100):.1f}%")
                         if st.button(f"📊 チャート表示", key=f"oc_{row['コード']}"):
                             st.session_state['oshime_chart'] = row.to_dict()
 
@@ -941,8 +1103,7 @@ with tab_daytrade:
 
     if st.button("⚡ デイトレスキャン開始", use_container_width=True, key="daytrade_btn"):
         st.session_state.pop('daytrade_results', None)
-        results_1h = []
-        results_5m = []
+        results_1h = []; results_5m = []
         prog = st.progress(0, text="スキャン中...")
         stbox = st.empty()
 
@@ -957,6 +1118,7 @@ with tab_daytrade:
         prog.progress(1.0, text="✅ 完了！")
         stbox.success(f"✅ 完了！  1h:{len(results_1h)}銘柄 / 5分:{len(results_5m)}銘柄")
         st.session_state['daytrade_results'] = {"1h": results_1h, "5m": results_5m}
+        save_results()  # ★ 保存
 
         all_dt = results_1h + results_5m
         best_dt = [r for r in all_dt if r.get("スコア", 0) >= 7]
@@ -989,6 +1151,7 @@ with tab_daytrade:
             st.divider()
 
         sub_1h, sub_5m = st.tabs(["⏱ 1時間足", "⚡ 5分足"])
+
         with sub_1h:
             st.markdown(f"### ⏱ 1時間足 押し目候補　{len(results_1h)}銘柄")
             if not results_1h:
@@ -1003,7 +1166,8 @@ with tab_daytrade:
                 if event_1h.selection.rows:
                     sel = df_1h_show.iloc[event_1h.selection.rows[0]]
                     st.markdown(f"#### 📈 {sel['銘柄名']} チャート（1時間足）")
-                    draw_chart(sel['コード'], sel['銘柄名'])
+                    # ★ 修正: デイトレ1hは1時間足をデフォルト表示
+                    draw_chart(sel['コード'], sel['銘柄名'], default_tf="1時間足")
 
         with sub_5m:
             st.markdown(f"### ⚡ 5分足 押し目候補　{len(results_5m)}銘柄")
@@ -1019,7 +1183,8 @@ with tab_daytrade:
                 if event_5m.selection.rows:
                     sel = df_5m_show.iloc[event_5m.selection.rows[0]]
                     st.markdown(f"#### 📈 {sel['銘柄名']} チャート（5分足）")
-                    draw_chart(sel['コード'], sel['銘柄名'])
+                    # ★ 修正: デイトレ5mは5分足をデフォルト表示
+                    draw_chart(sel['コード'], sel['銘柄名'], default_tf="5分足")
 
 # ═══════════════ タブ3: スキャン ══════════════════════════════
 with tab_scan:
@@ -1045,10 +1210,7 @@ with tab_scan:
                 row[f"RSI({tf_label})"]   = rsi_v
                 row[f"Stoch({tf_label})"] = stoch_v
                 row[f"ADX({tf_label})"]   = adx_v
-                if tf_label in ["1時間足", "5分足"] and sig == "🟢":
-                    row[f"時刻({tf_label})"] = sig_time or ""
-                if f"時刻({tf_label})" not in row:
-                    row[f"時刻({tf_label})"] = ""
+                row[f"時刻({tf_label})"]  = sig_time or "" if sig == "🟢" else ""
                 if tf_label == "日足":
                     row["MA25反発"] = "★" if ma25_b else ""
             buy_count  = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
@@ -1066,14 +1228,15 @@ with tab_scan:
 
         prog.progress(1.0, text="✅ 完了！")
         stbox.success(f"✅ {total_stocks}銘柄スキャン完了！")
-        st.session_state['scan_results'] = results
-        st.session_state['sector_stats'] = sector_stats
+        st.session_state['scan_results']  = results
+        st.session_state['sector_stats']  = sector_stats
+        save_results()  # ★ 保存
 
         star2up = [r for r in results if r.get("一致数",0) >= 2]
         ma25buy = [r for r in results if r.get("MA25反発","") == "★" and r.get("一致数",0) >= 1]
-        send_targets = {r["コード"]: r for r in star2up + ma25buy}.values()
+        send_targets = list({r["コード"]: r for r in star2up + ma25buy}.values())
         if send_targets:
-            ok, msg = send_buy_alert(list(send_targets), [])
+            ok, msg = send_buy_alert(send_targets, [])
             if ok:
                 st.success(f"📧 メール送信完了！ {msg}")
             else:
@@ -1096,7 +1259,7 @@ with tab_scan:
 # ═══════════════ タブ4: 結果詳細 ══════════════════════════════
 with tab_result:
     if 'scan_results' not in st.session_state:
-        st.info("先に「スキャン」タブを実行してください。")
+        st.info("先に「スキャン」または「全スキャン一括」タブを実行してください。")
     else:
         df_all = pd.DataFrame(st.session_state['scan_results'])
         buy_df = df_all[df_all['一致数']>0].sort_values('一致数', ascending=False)
@@ -1229,43 +1392,26 @@ with tab_winrate:
         st.dataframe(df_track.sort_values("日付",ascending=False).reset_index(drop=True),
                      use_container_width=True, hide_index=True)
 
-# ═══════════════ タブ8: 銘柄管理（改良版） ════════════════════
+# ═══════════════ タブ8: 銘柄管理 ══════════════════════════════
 with tab_manage:
     st.subheader("➕ 銘柄管理")
 
-    # ── ヘルパー: 証券番号 → 銘柄名・ティッカー自動取得 ─────────────
     def lookup_by_code(raw_code: str):
-        """
-        4〜5桁の証券番号を受け取り yfinance で銘柄名とティッカーを返す。
-        返り値: (銘柄名, ティッカー文字列) or (None, None)
-        """
         raw = raw_code.strip().upper()
-        # すでに .T / =X が付いていればそのまま、なければ .T を付ける
-        if raw.endswith(".T") or "=" in raw:
-            candidates = [raw]
-        else:
-            candidates = [raw + ".T"]
-
+        candidates = [raw] if (raw.endswith(".T") or "=" in raw) else [raw + ".T"]
         for ticker in candidates:
             try:
                 t = yf.Ticker(ticker)
-                # fast_info で存在確認（無効コードは KeyError / 0 になる）
                 price = t.fast_info.get("last_price", None)
                 if price is None or price == 0:
                     continue
                 info = t.info
-                name = (
-                    info.get("longName")
-                    or info.get("shortName")
-                    or info.get("displayName")
-                    or ticker
-                )
+                name = (info.get("longName") or info.get("shortName") or info.get("displayName") or ticker)
                 return name, ticker
             except Exception:
                 continue
         return None, None
 
-    # ── 1件追加 ─────────────────────────────────────────────────────
     st.markdown("#### 証券番号で追加（1件）")
     st.caption("4〜5桁の証券番号を入れるだけで銘柄名を自動取得します")
 
@@ -1273,19 +1419,10 @@ with tab_manage:
     sector_options   = existing_sectors + ["＋ 新しいセクターを作成"]
 
     col_code, col_sector, col_btn = st.columns([2, 3, 1])
-    input_code = col_code.text_input(
-        "証券番号", placeholder="例: 4063",
-        max_chars=8, key="mg_code_input",
-        label_visibility="visible"
-    )
-    selected_sector_opt = col_sector.selectbox(
-        "セクター", sector_options, key="mg_sector_sel"
-    )
+    input_code = col_code.text_input("証券番号", placeholder="例: 4063", max_chars=8, key="mg_code_input")
+    selected_sector_opt = col_sector.selectbox("セクター", sector_options, key="mg_sector_sel")
     if selected_sector_opt == "＋ 新しいセクターを作成":
-        new_sector_name = st.text_input(
-            "新しいセクター名", placeholder="例: AI・クラウド",
-            key="mg_new_sector"
-        )
+        new_sector_name = st.text_input("新しいセクター名", placeholder="例: AI・クラウド", key="mg_new_sector")
     else:
         new_sector_name = ""
 
@@ -1300,7 +1437,7 @@ with tab_manage:
             with st.spinner(f"{raw} の情報を取得中..."):
                 name, ticker = lookup_by_code(raw)
             if name is None:
-                st.error(f"❌ 証券番号 {raw} が見つかりませんでした。コードを確認してください。")
+                st.error(f"❌ 証券番号 {raw} が見つかりませんでした。")
             else:
                 if sector_target not in st.session_state['tickers']:
                     st.session_state['tickers'][sector_target] = {}
@@ -1313,47 +1450,28 @@ with tab_manage:
                     st.rerun()
 
     st.divider()
-
-    # ── 一括追加 ────────────────────────────────────────────────────
     st.markdown("#### 一括追加")
     st.caption("複数の証券番号をスペース・カンマ・改行で区切って貼り付けてください")
 
-    bulk_codes_input = st.text_area(
-        "証券番号（複数）", height=100,
+    bulk_codes_input = st.text_area("証券番号（複数）", height=100,
         placeholder="例:\n6857 8035 4063\nまたは\n6857,8035,4063",
-        key="mg_bulk_input",
-        label_visibility="collapsed"
-    )
-
-    bulk_sector_opt = st.selectbox(
-        "追加先セクター", sector_options, key="mg_bulk_sector"
-    )
+        key="mg_bulk_input", label_visibility="collapsed")
+    bulk_sector_opt = st.selectbox("追加先セクター", sector_options, key="mg_bulk_sector")
     if bulk_sector_opt == "＋ 新しいセクターを作成":
-        bulk_new_sector = st.text_input(
-            "新しいセクター名（一括用）", placeholder="例: 注目銘柄",
-            key="mg_bulk_new_sector"
-        )
+        bulk_new_sector = st.text_input("新しいセクター名（一括用）", placeholder="例: 注目銘柄", key="mg_bulk_new_sector")
     else:
         bulk_new_sector = ""
 
     if st.button("一括追加を実行", use_container_width=True, key="mg_bulk_btn"):
-        raw_list = re.split(r"[\s,、，\n]+", bulk_codes_input or "")
-        raw_list = [x.strip() for x in raw_list if x.strip()]
-        sector_target = (
-            bulk_new_sector.strip()
-            if bulk_sector_opt == "＋ 新しいセクターを作成"
-            else bulk_sector_opt
-        )
+        raw_list = [x.strip() for x in re.split(r"[\s,、，\n]+", bulk_codes_input or "") if x.strip()]
+        sector_target = bulk_new_sector.strip() if bulk_sector_opt == "＋ 新しいセクターを作成" else bulk_sector_opt
         if not raw_list:
             st.error("証券番号を入力してください。")
         elif not sector_target:
             st.error("セクター名を入力してください。")
         else:
             added, skipped, failed = [], [], []
-            prog  = st.progress(0, text="取得中...")
-            stbox = st.empty()
-            total = len(raw_list)
-
+            prog = st.progress(0); stbox = st.empty(); total = len(raw_list)
             for i, raw in enumerate(raw_list):
                 stbox.info(f"⏳ {raw}  [{i+1}/{total}]")
                 name, ticker = lookup_by_code(raw)
@@ -1367,57 +1485,32 @@ with tab_manage:
                     else:
                         st.session_state['tickers'][sector_target][name] = ticker
                         added.append(f"{name}（{ticker}）")
-                prog.progress((i + 1) / total)
-
-            save_tickers()
-            prog.progress(1.0)
-            stbox.empty()
-
-            if added:
-                st.success(f"✅ {len(added)}件追加: " + "、".join(added))
-            if skipped:
-                st.warning(f"⚠ {len(skipped)}件はすでに登録済み: " + "、".join(skipped))
-            if failed:
-                st.error(f"❌ {len(failed)}件が見つかりません: " + "、".join(failed))
-            if added:
-                st.rerun()
+                prog.progress((i+1)/total)
+            save_tickers(); prog.progress(1.0); stbox.empty()
+            if added:   st.success(f"✅ {len(added)}件追加: " + "、".join(added))
+            if skipped: st.warning(f"⚠ {len(skipped)}件はすでに登録済み: " + "、".join(skipped))
+            if failed:  st.error(f"❌ {len(failed)}件が見つかりません: " + "、".join(failed))
+            if added:   st.rerun()
 
     st.divider()
-
-    # ── 登録済み銘柄一覧 ─────────────────────────────────────────────
     st.markdown("#### 登録済み銘柄")
-    search_q = st.text_input(
-        "🔍 銘柄名・コードで絞り込み", placeholder="例: トヨタ　または　7203",
-        key="mg_search"
-    )
+    search_q = st.text_input("🔍 銘柄名・コードで絞り込み", placeholder="例: トヨタ　または　7203", key="mg_search")
 
     for sector, ticker_dict in list(st.session_state['tickers'].items()):
-        if search_q:
-            filtered = {
-                n: c for n, c in ticker_dict.items()
-                if search_q.lower() in n.lower() or search_q in c
-            }
-        else:
-            filtered = ticker_dict
-
-        if not filtered and search_q:
-            continue
-
+        filtered = {n: c for n, c in ticker_dict.items()
+                    if search_q.lower() in n.lower() or search_q in c} if search_q else ticker_dict
+        if not filtered and search_q: continue
         with st.expander(f"📂 {sector}（{len(ticker_dict)}銘柄）", expanded=bool(search_q)):
             for t_name, t_code in list(filtered.items()):
                 c1, c2, c3 = st.columns([3, 2, 1])
-                c1.write(t_name)
-                c2.code(t_code)
+                c1.write(t_name); c2.code(t_code)
                 if c3.button("🗑", key=f"del_{sector}_{t_name}"):
                     del st.session_state['tickers'][sector][t_name]
                     if not st.session_state['tickers'][sector]:
                         del st.session_state['tickers'][sector]
-                    save_tickers()
-                    st.rerun()
+                    save_tickers(); st.rerun()
 
     st.divider()
     if st.button("🔄 デフォルトに戻す", use_container_width=True):
         st.session_state['tickers'] = DEFAULT_TICKERS
-        save_tickers()
-        st.success("デフォルトに戻しました。")
-        st.rerun()
+        save_tickers(); st.success("デフォルトに戻しました。"); st.rerun()
