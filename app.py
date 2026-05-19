@@ -355,4 +355,535 @@ def update_tracking():
             entry = float(row["記録時株価"]) if row["記録時株価"] else None
             if not entry:
                 continue
-            if diff >= 3 and not row["
+            if diff >= 3 and not row["3日後"]:
+                p = get_price_at(code, rec_date + timedelta(days=3))
+                if p:
+                    df.at[i, "3日後"] = p
+                    pct = (p - entry) / entry * 100
+                    df.at[i, "3日騰落率"] = round(pct, 2)
+                    df.at[i, "勝敗"] = "✅ 勝" if pct >= 3 else "❌ 負" if pct <= -3 else "△ 引分"
+            if diff >= 5 and not row["5日後"]:
+                p = get_price_at(code, rec_date + timedelta(days=5))
+                if p:
+                    df.at[i, "5日後"] = p
+        except Exception:
+            pass
+    save_tracking(df)
+    return df
+
+# ── 指標計算 ──────────────────────────────────────────────────
+def calculate_indicators(df, bb_std=2.0):
+    c = df['Close']
+    for w in [5, 25, 75]:
+        df[f'MA_{w}'] = c.rolling(w).mean()
+    df['BB_Mid']   = c.rolling(20).mean()
+    df['BB_Std']   = c.rolling(20).std()
+    df['BB_Upper'] = df['BB_Mid'] + df['BB_Std'] * bb_std
+    df['BB_Lower'] = df['BB_Mid'] - df['BB_Std'] * bb_std
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    df['MACD']        = ema12 - ema26
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist']   = df['MACD'] - df['MACD_Signal']
+    delta = c.diff()
+    gain  = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
+    loss  = -delta.clip(upper=0).ewm(alpha=1/14, min_periods=14).mean()
+    df['RSI'] = 100 - (100 / (1 + gain / loss))
+    low14  = df['Low'].rolling(14).min()
+    high14 = df['High'].rolling(14).max()
+    df['Stoch_K'] = 100 * (c - low14) / (high14 - low14)
+    df['Stoch_D'] = df['Stoch_K'].rolling(3).mean()
+    hd  = df['High'] - df['High'].shift(1)
+    ld  = df['Low'].shift(1) - df['Low']
+    pdm = pd.Series(np.where((hd > ld) & (hd > 0), hd, 0), index=df.index)
+    mdm = pd.Series(np.where((ld > hd) & (ld > 0), ld, 0), index=df.index)
+    tr  = pd.concat([df['High']-df['Low'],
+                     (df['High']-df['Close'].shift(1)).abs(),
+                     (df['Low']-df['Close'].shift(1)).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    df['Plus_DI']  = 100 * pdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    df['Minus_DI'] = 100 * mdm.ewm(alpha=1/14, adjust=False).mean() / atr
+    dx  = 100 * (df['Plus_DI'] - df['Minus_DI']).abs() / (df['Plus_DI'] + df['Minus_DI'])
+    df['ADX'] = dx.ewm(alpha=1/14, adjust=False).mean()
+    df['MA25_Touch']  = (df['Low'] - df['MA_25']).abs() / df['MA_25'] < 0.03
+    df['MA25_Bounce'] = df['MA25_Touch'].rolling(5).max().fillna(False).astype(bool) & (c > df['MA_25'])
+    return df
+
+# ── 押し目買いスキャナー（日足）──────────────────────────────
+def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0):
+    try:
+        df = yf.download(code, period="6mo", interval="1d", progress=False)
+        if df.empty or len(df) < 80:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last      = df.iloc[-1]
+        prev      = df.iloc[-2]
+        prev2     = df.iloc[-3]
+        price     = float(last['Close'])
+        ma5       = float(last['MA_5'])
+        ma25      = float(last['MA_25'])
+        ma75      = float(last['MA_75'])
+        rsi       = float(last['RSI'])
+        rsi_prev  = float(prev['RSI'])
+        rsi_prev2 = float(prev2['RSI'])
+        bb_lower  = float(last['BB_Lower'])
+        macd_hist      = float(last['MACD_Hist'])
+        macd_hist_prev = float(prev['MACD_Hist'])
+        vol      = float(df['Volume'].iloc[-1])
+        vol_avg  = float(df['Volume'].iloc[-20:].mean())
+
+        if not (ma5 > ma25 > ma75):
+            return None
+        if float(df['RSI'].iloc[-5:].min()) > 32:
+            return None
+        if not (rsi > rsi_prev or rsi > rsi_prev2):
+            return None
+
+        bb_touched = any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01
+                         for i in range(-5, 0))
+        if not bb_touched:
+            return None
+
+        high52 = float(df['High'].iloc[-252:].max()) if len(df) >= 252 else float(df['High'].max())
+        if price >= high52 * 0.95:
+            return None
+
+        near_ma25 = abs(price - ma25) / ma25 * 100 <= 5.0
+        near_ma5  = abs(price - ma5)  / ma5  * 100 <= 3.0
+        support_level = "MA25" if near_ma25 else ("MA5" if near_ma5 else "BB下限")
+        macd_bottom = macd_hist > macd_hist_prev
+
+        score = 0; reasons = []
+        score += 4; reasons.append("RSI売られすぎ圏タッチ")
+        score += 3; reasons.append("BB下限タッチ")
+        if rsi > rsi_prev or rsi > rsi_prev2: score += 2; reasons.append("RSI反発中")
+        if macd_bottom:         score += 2; reasons.append("MACD底打ち")
+        if near_ma25:           score += 2; reasons.append("MA25付近")
+        if vol > vol_avg * 1.5: score += 1; reasons.append("出来高急増")
+
+        grade = ("🟢 絶好の押し目" if score >= 10 else "🟡 押し目候補" if score >= 7 else "⬜ 参考")
+        high20 = float(df['High'].iloc[-20:].max())
+
+        return {
+            "銘柄名": name, "コード": code,
+            "株価": round(price, 1), "BB下限": round(bb_lower, 1),
+            "RSI": round(rsi, 1), "RSI最小": round(float(df['RSI'].iloc[-5:].min()), 1),
+            "サポート": support_level, "出来高比": f"{round(vol/vol_avg,1)}x",
+            "MACDボトム": "✓" if macd_bottom else "－",
+            "スコア": score, "判定": grade,
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.98, 1),
+            "利確目標": round(ma25 * 1.10, 1),
+            "根拠": " / ".join(reasons),
+            "押し目幅": f"{round((high20 - price) / high20 * 100, 1)}%",
+            "直近高値": round(high20, 1),
+        }
+    except Exception:
+        return None
+
+# ── デイトレ押し目スキャナー（1時間足）───────────────────────
+def scan_oshime_1h(code, name):
+    try:
+        df = yf.download(code, period="30d", interval="1h", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price = float(last['Close'])
+        ma25  = float(last['MA_25'])
+        rsi   = float(last['RSI'])
+        rsi_prev    = float(prev['RSI'])
+        bb_lower    = float(last['BB_Lower'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
+
+        rsi_min = float(df['RSI'].iloc[-8:].min())
+        if rsi_min > 35 or not (rsi > rsi_prev):
+            return None
+        if not any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01 for i in range(-8, 0)):
+            return None
+
+        macd_bottom = macd_hist > macd_hist_p
+        near_ma25   = abs(price - ma25) / ma25 * 100 <= 5.0
+
+        score = 4; reasons = ["RSI売られすぎ(1h)", "BB下限(1h)"]
+        if macd_bottom: score += 2; reasons.append("MACD底打ち(1h)")
+        if near_ma25:   score += 2; reasons.append("MA25付近(1h)")
+        if rsi < 32:    score += 1; reasons.append("RSI深め")
+
+        return {
+            "銘柄名": name, "コード": code, "時間軸": "1時間足",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
+            "サポート": "MA25" if near_ma25 else "BB下限",
+            "MACDボトム": "✓" if macd_bottom else "－",
+            "スコア": score, "判定": "🟢 絶好(1h)" if score >= 7 else "🟡 候補(1h)",
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.98, 1),
+            "利確目標": round(price * 1.03, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
+        return None
+
+# ── デイトレ押し目スキャナー（5分足）────────────────────────
+def scan_oshime_5m(code, name):
+    try:
+        df = yf.download(code, period="5d", interval="5m", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price = float(last['Close'])
+        ma25  = float(last['MA_25'])
+        rsi   = float(last['RSI'])
+        rsi_prev    = float(prev['RSI'])
+        bb_lower    = float(last['BB_Lower'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
+
+        rsi_min = float(df['RSI'].iloc[-12:].min())
+        if rsi_min > 32 or not (rsi > rsi_prev):
+            return None
+        if not any(float(df['Low'].iloc[i]) <= float(df['BB_Lower'].iloc[i]) * 1.01 for i in range(-12, 0)):
+            return None
+
+        macd_bottom = macd_hist > macd_hist_p
+        near_ma25   = abs(price - ma25) / ma25 * 100 <= 3.0
+
+        score = 4; reasons = ["RSI売られすぎ(5m)", "BB下限(5m)"]
+        if macd_bottom: score += 2; reasons.append("MACD底打ち(5m)")
+        if near_ma25:   score += 2; reasons.append("MA25付近(5m)")
+
+        return {
+            "銘柄名": name, "コード": code, "時間軸": "5分足",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最小": round(rsi_min, 1), "BB下限": round(bb_lower, 1),
+            "サポート": "MA25" if near_ma25 else "BB下限",
+            "MACDボトム": "✓" if macd_bottom else "－",
+            "スコア": score, "判定": "🟢 絶好(5m)" if score >= 7 else "🟡 候補(5m)",
+            "エントリー": round(price, 1),
+            "損切り": round(bb_lower * 0.99, 1),
+            "利確目標": round(price * 1.015, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
+        return None
+
+def detect_signals(df, rsi_ob=70, rsi_os=30, sensitivity="標準",
+                   trend_filter=True, dmi_filter=False, bb_std=2.0):
+    df['Buy_Signal']  = False
+    df['Sell_Signal'] = False
+    if len(df) < 50:
+        return df
+    uptrend  = df['Close'] > df['MA_75'] if trend_filter else pd.Series(True, index=df.index)
+    dmi_up   = (df['Plus_DI'] > df['Minus_DI']) & (df['ADX'] > 20) if dmi_filter else pd.Series(True, index=df.index)
+    dmi_down = (df['Minus_DI'] > df['Plus_DI']) & (df['ADX'] > 20) if dmi_filter else pd.Series(True, index=df.index)
+    pm  = df['MACD'].shift(1); ps  = df['MACD_Signal'].shift(1)
+    ph  = df['MACD_Hist'].shift(1)
+    psk = df['Stoch_K'].shift(1); psd = df['Stoch_D'].shift(1)
+    macd_gc  = (pm <= ps) & (df['MACD'] > df['MACD_Signal'])
+    macd_dc  = (pm >= ps) & (df['MACD'] < df['MACD_Signal'])
+    macd_up  = df['MACD_Hist'] > ph
+    macd_dn  = df['MACD_Hist'] < ph
+    stoch_gc = (psk <= psd) & (df['Stoch_K'] > df['Stoch_D'])
+    stoch_dc = (psk >= psd) & (df['Stoch_K'] < df['Stoch_D'])
+    pr  = df['RSI'].shift(1)
+    rsi_reb  = (pr <= rsi_os + 10) & (df['RSI'] > pr)
+    rsi_drp  = (pr >= rsi_ob - 10) & (df['RSI'] < pr)
+    if sensitivity == "敏感":
+        not_ob = (df['Stoch_K'] < 70) & (df['RSI'] < 65)
+        df.loc[uptrend & dmi_up &
+               (macd_gc | (stoch_gc & (df['Stoch_K'] < 50)) | rsi_reb) &
+               ~macd_dc & not_ob, 'Buy_Signal'] = True
+        df.loc[dmi_down &
+               (macd_dc | (stoch_dc & (df['Stoch_K'] > 50)) | rsi_drp) &
+               ~macd_gc & macd_dn, 'Sell_Signal'] = True
+    else:
+        near25 = (df['Close'] - df['MA_25']).abs() / df['MA_25'] < 0.08
+        not_ob = (df['Stoch_K'] < 70) & (df['RSI'] < 65)
+        df.loc[uptrend & dmi_up & near25 &
+               (macd_gc | (stoch_gc & (df['Stoch_K'] < 40))) &
+               ~macd_dc & macd_up & not_ob, 'Buy_Signal'] = True
+        touch_ub = df['High'] >= df['BB_Upper']
+        df.loc[dmi_down &
+               ((df['RSI'] > rsi_ob) | touch_ub | (stoch_dc & (df['Stoch_K'] > 70))) &
+               ~macd_gc & macd_dn, 'Sell_Signal'] = True
+    return df
+
+@st.cache_data(ttl=180)
+def load_data(ticker, period, interval):
+    try:
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        if not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+            df.dropna(how='all', inplace=True)
+            if pd.api.types.is_datetime64_any_dtype(df.index):
+                df.index = (df.index.tz_localize('Asia/Tokyo')
+                            if df.index.tz is None
+                            else df.index.tz_convert('Asia/Tokyo'))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def get_signal_time(df, signal_col, tf):
+    try:
+        buy_rows = df[df[signal_col] == True]
+        if buy_rows.empty:
+            return None
+        last_signal_time = buy_rows.index[-1]
+        if tf == "1d":
+            return last_signal_time.strftime("%m/%d")
+        else:
+            try:
+                t = last_signal_time.tz_convert("Asia/Tokyo")
+            except Exception:
+                t = last_signal_time
+            return t.strftime("%m/%d %H:%M")
+    except Exception:
+        return None
+
+def scan_one(code, tf, period, rsi_ob, rsi_os, sensitivity, trend_filter, dmi_filter, bb_std):
+    df = load_data(code, period, tf)
+    if df.empty or len(df) < 50:
+        return "❓", None, None, None, False, None
+    df = calculate_indicators(df, bb_std=bb_std)
+    df = detect_signals(df, rsi_ob=rsi_ob, rsi_os=rsi_os, sensitivity=sensitivity,
+                        trend_filter=trend_filter, dmi_filter=dmi_filter, bb_std=bb_std)
+    last      = df.iloc[-1]
+    rsi_val   = round(float(last['RSI']),    1) if not np.isnan(last['RSI'])      else None
+    stoch_val = round(float(last['Stoch_K']),1) if not np.isnan(last['Stoch_K']) else None
+    adx_val   = round(float(last['ADX']),    1) if not np.isnan(last['ADX'])      else None
+    ma25_b    = bool(last['MA25_Bounce'])
+    if last['Buy_Signal']:
+        return "🟢", rsi_val, stoch_val, adx_val, ma25_b, get_signal_time(df, 'Buy_Signal', tf)
+    if last['Sell_Signal']:
+        return "🔴", rsi_val, stoch_val, adx_val, ma25_b, get_signal_time(df, 'Sell_Signal', tf)
+    return "➖", rsi_val, stoch_val, adx_val, ma25_b, None
+
+TF_CONFIG = {
+    "日足":    {"tf": "1d",  "period": "1y"},
+    "1時間足": {"tf": "1h",  "period": "3mo"},
+    "5分足":   {"tf": "5m",  "period": "5d"},
+}
+
+@st.cache_data(ttl=180)
+def load_chart_data(code, interval, period):
+    try:
+        df = yf.download(code, period=period, interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how="all", inplace=True)
+        if pd.api.types.is_datetime64_any_dtype(df.index):
+            df.index = (df.index.tz_localize("Asia/Tokyo")
+                        if df.index.tz is None
+                        else df.index.tz_convert("Asia/Tokyo"))
+        df = calculate_indicators(df)
+        df = detect_signals(df)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+def render_chart(df, name, code, tf_label, entry=None, stop=None, target=None):
+    if df is None or df.empty:
+        st.warning("チャートデータを取得できませんでした")
+        return
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+        row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
+        subplot_titles=[f"{name} ({code}) [{tf_label}]", "MACD", "RSI"])
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name="株価", increasing_line_color='#ef4444', decreasing_line_color='#3b82f6'), row=1, col=1)
+    for col, color, label in [("MA_5","#facc15","MA5"), ("MA_25","#00d4aa","MA25"), ("MA_75","#a78bfa","MA75")]:
+        if col in df.columns:
+            fig.add_trace(go.Scatter(x=df.index, y=df[col], name=label,
+                line=dict(color=color, width=1.5)), row=1, col=1)
+    if 'BB_Upper' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], name="BB+",
+            line=dict(color='rgba(148,163,184,0.4)', dash='dot', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], name="BB-",
+            line=dict(color='rgba(148,163,184,0.4)', dash='dot', width=1),
+            fill='tonexty', fillcolor='rgba(148,163,184,0.05)'), row=1, col=1)
+    if entry:
+        fig.add_hline(y=entry,  line_color='#00d4aa', line_dash='dash', annotation_text=f"エントリー {entry}", row=1, col=1)
+    if stop:
+        fig.add_hline(y=stop,   line_color='#ef4444', line_dash='dash', annotation_text=f"損切り {stop}", row=1, col=1)
+    if target:
+        fig.add_hline(y=target, line_color='#facc15', line_dash='dash', annotation_text=f"利確 {target}", row=1, col=1)
+    if 'Buy_Signal' in df.columns:
+        buy_pts = df[df['Buy_Signal']]
+        if not buy_pts.empty:
+            fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.99, mode='markers',
+                marker=dict(symbol='triangle-up', size=12, color='#00d4aa'), name='買いシグナル'), row=1, col=1)
+    hist_colors = ['#ef4444' if v < 0 else '#00d4aa' for v in df['MACD_Hist'].fillna(0)]
+    fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], name="MACDヒスト",
+        marker_color=hist_colors, opacity=0.7), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
+        name="MACD", line=dict(color='#60a5fa', width=1.2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'],
+        name="シグナル", line=dict(color='#f97316', width=1.2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name="RSI",
+        line=dict(color='#a78bfa', width=1.5)), row=3, col=1)
+    fig.add_hline(y=70, line_color='rgba(239,68,68,0.4)',  line_dash='dash', row=3, col=1)
+    fig.add_hline(y=30, line_color='rgba(0,212,170,0.4)', line_dash='dash', row=3, col=1)
+    fig.update_layout(
+        height=620, paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+        font=dict(color='#e6edf3', size=11),
+        legend=dict(orientation='h', y=1.02, font=dict(size=10)),
+        xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=40,b=10))
+    for i in range(1, 4):
+        fig.update_xaxes(gridcolor='#1e293b', row=i, col=1)
+        fig.update_yaxes(gridcolor='#1e293b', row=i, col=1)
+    st.plotly_chart(fig, use_container_width=True)
+
+def draw_chart(code, name, entry=None, stop=None, target=None, default_tf="日足"):
+    tf_options = {"日足": ("1d","6mo"), "1時間足": ("1h","1mo"), "5分足": ("5m","5d")}
+    key_prefix = f"tf_{code}_{name}"
+    state_key  = f"chart_tf_{code}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = default_tf
+    cols = st.columns(3)
+    for i, tf_label in enumerate(list(tf_options.keys())):
+        btn_type = "primary" if st.session_state[state_key] == tf_label else "secondary"
+        if cols[i].button(tf_label, key=f"{key_prefix}_{tf_label}", type=btn_type, use_container_width=True):
+            st.session_state[state_key] = tf_label
+    selected_tf = st.session_state[state_key]
+    interval, period = tf_options[selected_tf]
+    with st.spinner(f"{selected_tf}のデータを取得中..."):
+        df = load_chart_data(code, interval, period)
+    render_chart(df, name, code, selected_tf, entry, stop, target)
+
+# ── タイトル ──────────────────────────────────────────────────
+st.title("📡 kabu3 Pro")
+st.caption("マルチTFスキャン ｜ 押し目買いスキャナー ｜ デイトレ ｜ セクターローテーション ｜ 勝率トラッキング")
+
+# 前回の保存時刻を表示
+if 'last_saved_at' in st.session_state:
+    st.caption(f"📂 前回スキャン: {st.session_state['last_saved_at']}（リロード後も復元済み）")
+
+# ── サイドバー ────────────────────────────────────────────────
+selected_sectors = []
+rsi_ob = 70; rsi_os = 30; bb_std = 2.0
+sensitivity = "標準"; trend_filter = True; dmi_filter = False
+pb_min = 3.0; pb_max = 15.0; pb_near = 3.0
+
+with st.sidebar:
+    st.header("⚙️ スキャン設定")
+    sensitivity  = st.radio("シグナル感度", ["標準", "敏感"], horizontal=True)
+    trend_filter = st.checkbox("順張りフィルター", value=True)
+    dmi_filter   = st.checkbox("DMIフィルター（ADX>20）", value=False)
+    st.divider()
+    rsi_ob = st.slider("RSI 買われすぎ", 60, 90, 70, 5)
+    rsi_os = st.slider("RSI 売られすぎ", 10, 40, 30, 5)
+    bb_std = st.slider("ボリンジャーバンド σ", 1.0, 3.0, 2.0, 0.1)
+    st.divider()
+    st.subheader("📉 押し目買い設定")
+    pb_min  = st.slider("押し目 最小(%)", 1.0, 8.0, 3.0, 0.5)
+    pb_max  = st.slider("押し目 最大(%)", 8.0, 25.0, 15.0, 1.0)
+    pb_near = st.slider("MA接近幅(%)",   1.0, 6.0, 3.0, 0.5)
+    st.divider()
+    all_sectors      = list(st.session_state['tickers'].keys())
+    selected_sectors = st.multiselect("セクター絞り込み（空=全部）", all_sectors)
+
+if selected_sectors:
+    target_tickers = {n: c for sec in selected_sectors
+                      for n, c in st.session_state['tickers'][sec].items()}
+else:
+    target_tickers = {n: c for sec in st.session_state['tickers'].values()
+                      for n, c in sec.items()}
+
+total_stocks = len(target_tickers)
+
+# ── タブ ─────────────────────────────────────────────────────
+tab_bulk, tab_oshime, tab_daytrade, tab_scan, tab_result, tab_chart, tab_sector, tab_winrate, tab_manage = st.tabs([
+    "🚀 全スキャン一括", "📉 押し目(日足)", "⚡ デイトレ", "🔍 スキャン", "📊 結果詳細", "📈 チャート", "🌀 セクター", "🏆 勝率", "➕ 銘柄管理"
+])
+
+# ═══════════════ タブ0: 全スキャン一括 ════════════════════════
+with tab_bulk:
+    st.subheader("🚀 全スキャン一括実行")
+    st.caption("デイトレ・押し目・マルチTFを1回のループでまとめてスキャンします")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("対象銘柄", f"{total_stocks}銘柄")
+    col2.metric("スキャン種別", "3種類")
+    col3.metric("時間軸", "日・1h・5分")
+    col4.metric("メール通知", "シグナル時自動")
+
+    if st.button("🚀 全スキャン一括開始", use_container_width=True, key="bulk_btn", type="primary"):
+        for k in ['bulk_results', 'scan_results', 'sector_stats', 'oshime_results', 'daytrade_results']:
+            st.session_state.pop(k, None)
+
+        bulk_results = {
+            "daytrade_both": [],
+            "daytrade_1h":   [],
+            "daytrade_5m":   [],
+            "oshime":        [],
+            "scan":          [],
+            "sector_stats":  {},
+        }
+        time_str = datetime.now().strftime("%m/%d %H:%M")
+        code_to_sector = {c: sec for sec, d in st.session_state['tickers'].items() for n, c in d.items()}
+
+        prog  = st.progress(0, text="スキャン中...")
+        stbox = st.empty()
+
+        for i, (name, code) in enumerate(target_tickers.items()):
+            stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
+
+            r1h = scan_oshime_1h(code, name)
+            r5m = scan_oshime_5m(code, name)
+            if r1h: bulk_results["daytrade_1h"].append(r1h)
+            if r5m: bulk_results["daytrade_5m"].append(r5m)
+            if r1h and r5m:
+                bulk_results["daytrade_both"].append({
+                    "日時": time_str, "銘柄名": name, "コード": code,
+                    "1時間足": "🟢", "5分足": "🟢",
+                    "RSI(1時間足)": r1h.get("RSI",""),
+                    "Stoch(1時間足)": "",
+                })
+
+            ro = scan_oshime(code, name, pb_min, pb_max, pb_near)
+            if ro: bulk_results["oshime"].append(ro)
+
+            row = {"銘柄名": name, "コード": code, "セクター": code_to_sector.get(code,"その他")}
+            for tf_label, cfg in TF_CONFIG.items():
+                sig, rsi_v, stoch_v, adx_v, ma25_b, sig_time = scan_one(
+                    code, cfg["tf"], cfg["period"], rsi_ob, rsi_os,
+                    sensitivity, trend_filter, dmi_filter, bb_std)
+                row[tf_label]              = sig
+                row[f"RSI({tf_label})"]   = rsi_v
+                row[f"Stoch({tf_label})"] = stoch_v
+                row[f"ADX({tf_label})"]   = adx_v
+                row[f"時刻({tf_label})"]  = sig_time or "" if sig == "🟢" else ""
+                if tf_label == "日足":
+                    row["MA25反発"] = "★" if ma25_b else ""
+            buy_count = sum(1 for tfl in TF_CONFIG if row[tfl] == "🟢")
+            row["一致数"] = buy_count
+            row["強度"]   = "★★★" if buy_count==3 else "★★☆" if buy_count==2 else "★☆☆" if buy_count==1 else "－"
+            bulk_results["scan"].append(row)
+
+            sec = row["セクター"]
+            if sec not in bulk_results["sector_stats"]:
+                bulk_results["sector_stats"][sec] = {"total":0,"buy":0,"sell":0,"star3":0}
+            bulk_results["sector_stats"][sec]["total"] += 1
+            if buy_count >= 1: bulk_results["sector_stats"][sec]["buy"] += 1
+            if buy_count == 3: bulk_results["sector_stats"][sec]["star3"] += 1
+            if any(row[tfl]=="🔴
