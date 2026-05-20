@@ -254,7 +254,7 @@ def save_tracking(df):
 # ── メール送信 ──────────────────────────────────────────────
 ALERT_TO = "kamejirou1@gmail.com"
 
-def send_buy_alert(signal_rows, oshime_rows, daytrade_rows=None):
+def send_buy_alert(signal_rows, oshime_rows, daytrade_rows=None, short_rows=None):
     try:
         gmail_user = st.secrets["gmail_user"]
         gmail_pass = st.secrets["gmail_pass"]
@@ -262,56 +262,181 @@ def send_buy_alert(signal_rows, oshime_rows, daytrade_rows=None):
         return False, "Secretsが未設定です"
 
     daytrade_rows = daytrade_rows or []
-    if not signal_rows and not oshime_rows and not daytrade_rows:
+    short_rows    = short_rows or []
+    if not signal_rows and not oshime_rows and not daytrade_rows and not short_rows:
         return False, "通知対象なし"
 
     today = datetime.now().strftime("%Y年%m月%d日 %H:%M")
-    lines = ["📈 株式買いシグナル通知  " + today, ""]
+    total = len(signal_rows) + len(oshime_rows) + len(daytrade_rows) + len(short_rows)
 
+    # ── HTMLメール本文 ──────────────────────────────────────
+    def card(color, emoji, title, rows_html):
+        return f"""
+        <div style="margin:16px 0;border-radius:10px;overflow:hidden;border:1px solid {color};">
+          <div style="background:{color};color:#fff;padding:10px 16px;font-size:16px;font-weight:bold;">
+            {emoji} {title}
+          </div>
+          <div style="background:#1a1a2e;padding:12px 16px;">
+            {rows_html}
+          </div>
+        </div>"""
+
+    def row_dt(r):
+        return f"""
+        <div style="border-bottom:1px solid #2a2a4a;padding:10px 0;">
+          <b style="color:#00d4aa;font-size:15px;">{r.get('銘柄名','')}
+            <span style="color:#94a3b8;font-size:13px;">({r.get('コード','')})</span>
+          </b>
+          <div style="margin-top:6px;font-size:13px;color:#e2e8f0;">
+            🕐 1時間足: {r.get('1時間足','🟢')} &nbsp;
+            ⚡ 5分足: {r.get('5分足','🟢')} &nbsp;
+            📊 RSI(1h): <b>{r.get('RSI(1時間足)','')}</b>
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">
+            検出: {r.get('日時','')} &nbsp;｜&nbsp; 日足トレンド: ↑上昇中
+          </div>
+        </div>"""
+
+    def row_multi(r):
+        stars = r.get('強度','')
+        ma25  = "⭐ MA25反発" if r.get('MA25反発') == '★' else ''
+        return f"""
+        <div style="border-bottom:1px solid #2a2a4a;padding:10px 0;">
+          <b style="color:#f97316;font-size:15px;">{r.get('銘柄名','')}
+            <span style="color:#94a3b8;font-size:13px;">({r.get('コード','')})</span>
+            <span style="color:#fbbf24;font-size:13px;margin-left:8px;">{stars}</span>
+          </b>
+          <div style="margin-top:6px;font-size:13px;color:#e2e8f0;">
+            📅 日足: {r.get('日足','')} &nbsp;
+            🕐 1h: {r.get('1時間足','')} &nbsp;
+            ⚡ 5分: {r.get('5分足','')} &nbsp;
+            📊 RSI: <b>{r.get('RSI(日足)','')}</b> &nbsp; {ma25}
+          </div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">
+            セクター: {r.get('セクター','')}
+          </div>
+        </div>"""
+
+    def row_oshime(r):
+        entry  = r.get('エントリー', 0)
+        stop   = r.get('損切り', 0)
+        target = r.get('利確目標', 0)
+        loss_pct   = round((entry - stop)  / entry * 100, 1) if entry else 0
+        profit_pct = round((target - entry) / entry * 100, 1) if entry else 0
+        return f"""
+        <div style="border-bottom:1px solid #2a2a4a;padding:10px 0;">
+          <b style="color:#a78bfa;font-size:15px;">{r.get('銘柄名','')}
+            <span style="color:#94a3b8;font-size:13px;">({r.get('コード','')})</span>
+          </b>
+          <span style="margin-left:8px;font-size:12px;background:#1e3a5f;color:#60a5fa;
+                       padding:2px 8px;border-radius:10px;">{r.get('判定','')}</span>
+          <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;">
+            <div style="background:#0f2a3f;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">株価</div>
+              <div style="font-size:16px;color:#e2e8f0;font-weight:bold;">¥{entry:,}</div>
+            </div>
+            <div style="background:#0f3f2a;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">利確目標</div>
+              <div style="font-size:16px;color:#00d4aa;font-weight:bold;">¥{target:,}
+                <span style="font-size:12px;">+{profit_pct}%</span>
+              </div>
+            </div>
+            <div style="background:#3f1515;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">損切り</div>
+              <div style="font-size:16px;color:#ef4444;font-weight:bold;">¥{stop:,}
+                <span style="font-size:12px;">-{loss_pct}%</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:6px;">
+            📋 根拠: {r.get('根拠','')} &nbsp;｜&nbsp; RSI: {r.get('RSI','')} &nbsp;
+            ｜&nbsp; サポート: {r.get('サポート','')}
+          </div>
+        </div>"""
+
+    def row_short(r):
+        entry  = r.get('エントリー(売)', 0)
+        stop   = r.get('損切り(買戻)', 0)
+        target = r.get('利確目標', 0)
+        loss_pct   = round((stop - entry)   / entry * 100, 1) if entry else 0
+        profit_pct = round((entry - target) / entry * 100, 1) if entry else 0
+        return f"""
+        <div style="border-bottom:1px solid #2a2a4a;padding:10px 0;">
+          <b style="color:#ef4444;font-size:15px;">{r.get('銘柄名','')}
+            <span style="color:#94a3b8;font-size:13px;">({r.get('コード','')})</span>
+          </b>
+          <span style="margin-left:8px;font-size:12px;background:#3f1515;color:#ef4444;
+                       padding:2px 8px;border-radius:10px;">{r.get('判定','')}</span>
+          <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;">
+            <div style="background:#2a1515;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">売りエントリー</div>
+              <div style="font-size:16px;color:#ef4444;font-weight:bold;">¥{entry:,}</div>
+            </div>
+            <div style="background:#0f2a3f;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">利確目標（買戻）</div>
+              <div style="font-size:16px;color:#00d4aa;font-weight:bold;">¥{target:,}
+                <span style="font-size:12px;">-{profit_pct}%</span>
+              </div>
+            </div>
+            <div style="background:#3f2a0a;border-radius:8px;padding:8px 12px;min-width:100px;">
+              <div style="font-size:11px;color:#64748b;">損切り（買戻）</div>
+              <div style="font-size:16px;color:#fbbf24;font-weight:bold;">¥{stop:,}
+                <span style="font-size:12px;">+{loss_pct}%</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#94a3b8;margin-top:6px;">
+            📋 根拠: {r.get('根拠','')} &nbsp;｜&nbsp; RSI: {r.get('RSI','')}
+          </div>
+        </div>"""
+
+    sections_html = ""
     if daytrade_rows:
-        lines.append("=" * 38)
-        lines.append("⚡ デイトレ買いシグナル（1h＋5分）")
-        lines.append("=" * 38)
-        for r in daytrade_rows:
-            lines.append(f"【{r.get('銘柄名','')}】 ({r.get('コード','')})")
-            lines.append(f"  1時間足:{r.get('1時間足','')}  5分足:{r.get('5分足','')}  RSI(1h):{r.get('RSI(1時間足)','')}")
-            lines.append(f"  検出時刻: {r.get('日時','')}")
-
+        rows_html = "".join(row_dt(r) for r in daytrade_rows)
+        sections_html += card("#0891b2", "⚡", f"デイトレ買いシグナル（日足↑順張り）　{len(daytrade_rows)}銘柄", rows_html)
+    if short_rows:
+        rows_html = "".join(row_short(r) for r in sorted(short_rows, key=lambda x: -x.get('スコア',0)))
+        sections_html += card("#dc2626", "🔻", f"信用売りシグナル（日足↓逆張り売り）　{len(short_rows)}銘柄", rows_html)
     if signal_rows:
-        lines.append("")
-        lines.append("=" * 38)
-        lines.append("🔥 マルチTF買いシグナル")
-        lines.append("=" * 38)
-        for r in signal_rows:
-            lines.append(f"【{r.get('強度','')}】{r.get('銘柄名','')} ({r.get('コード','')})")
-            lines.append(f"  日足:{r.get('日足','')} 1h:{r.get('1時間足','')} 5分:{r.get('5分足','')}")
-            lines.append(f"  RSI:{r.get('RSI(日足)','−')}  {r.get('MA25反発','')}")
-
+        rows_html = "".join(row_multi(r) for r in sorted(signal_rows, key=lambda x: -x.get('一致数',0)))
+        sections_html += card("#ea580c", "🔥", f"マルチTF買いシグナル　{len(signal_rows)}銘柄", rows_html)
     if oshime_rows:
-        lines.append("")
-        lines.append("=" * 38)
-        lines.append("📉 押し目買いシグナル")
-        lines.append("=" * 38)
-        for r in oshime_rows:
-            lines.append(f"【{r.get('判定','')}】{r.get('銘柄名','')} ({r.get('コード','')})")
-            lines.append(f"  株価:¥{r.get('株価',0)}  RSI:{r.get('RSI','')}")
-            lines.append(f"  エントリー:¥{r.get('エントリー',0)}  損切り:¥{r.get('損切り',0)}  利確:¥{r.get('利確目標',0)}")
-            lines.append(f"  根拠: {r.get('根拠','')}")
+        rows_html = "".join(row_oshime(r) for r in sorted(oshime_rows, key=lambda x: -x.get('スコア',0)))
+        sections_html += card("#7c3aed", "📉", f"押し目買いシグナル　{len(oshime_rows)}銘柄", rows_html)
 
-    lines.append("")
-    lines.append("⚠️ 投資判断はご自身の責任でお願いします。")
-    body = "\n".join(lines)
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+    <body style="margin:0;padding:0;background:#0d1117;color:#e2e8f0;font-family:'Helvetica Neue',Arial,sans-serif;">
+      <div style="max-width:600px;margin:0 auto;padding:16px;">
+
+        <div style="background:linear-gradient(135deg,#1e3a5f,#0f2a3f);
+                    border-radius:12px;padding:20px;margin-bottom:16px;
+                    border:1px solid #00d4aa;">
+          <div style="font-size:22px;font-weight:bold;color:#00d4aa;">📈 kabu3 買いシグナル</div>
+          <div style="font-size:14px;color:#94a3b8;margin-top:4px;">{today} &nbsp;｜&nbsp; 合計 {total} 件</div>
+        </div>
+
+        {sections_html}
+
+        <div style="margin-top:16px;padding:12px;background:#111827;border-radius:8px;
+                    font-size:12px;color:#64748b;text-align:center;">
+          ⚠️ 投資判断はご自身の責任でお願いします。このメールは自動送信です。
+        </div>
+      </div>
+    </body>
+    </html>"""
 
     try:
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("alternative")
         msg["From"]    = gmail_user
         msg["To"]      = ALERT_TO
-        msg["Subject"] = "📈 買いシグナル " + today
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg["Subject"] = f"📈 買いシグナル {today}（{total}件）"
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(gmail_user, gmail_pass)
             server.sendmail(gmail_user, ALERT_TO, msg.as_string())
-        total = len(signal_rows) + len(oshime_rows) + len(daytrade_rows)
         return True, f"{total}件のシグナルを送信しました"
     except Exception as e:
         return False, str(e)
@@ -484,9 +609,37 @@ def scan_oshime(code, name, pullback_min=3.0, pullback_max=15.0, near_ma_pct=3.0
     except Exception:
         return None
 
+# ── 日足トレンド確認（デイトレ逆張り防止）──────────────────
+@st.cache_data(ttl=3600)
+def check_daily_uptrend(code):
+    """
+    日足でMA5 > MA25 > MA75（上昇トレンド）かどうか確認。
+    デイトレスキャンで日足の流れに逆らうシグナルを除外するために使用。
+    """
+    try:
+        df = yf.download(code, period="6mo", interval="1d", progress=False)
+        if df.empty or len(df) < 80:
+            return False
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        for w in [5, 25, 75]:
+            df[f'MA_{w}'] = df['Close'].rolling(w).mean()
+        last = df.iloc[-1]
+        ma5  = float(last['MA_5'])
+        ma25 = float(last['MA_25'])
+        ma75 = float(last['MA_75'])
+        return ma5 > ma25 > ma75   # True = 上昇トレンド
+    except Exception:
+        return False
+
 # ── デイトレ押し目スキャナー（1時間足）───────────────────────
 def scan_oshime_1h(code, name):
     try:
+        # ★ 日足トレンド確認 → 下降トレンドは除外
+        if not check_daily_uptrend(code):
+            return None
+
         df = yf.download(code, period="30d", interval="1h", progress=False)
         if df.empty or len(df) < 50:
             return None
@@ -514,7 +667,7 @@ def scan_oshime_1h(code, name):
         macd_bottom = macd_hist > macd_hist_p
         near_ma25   = abs(price - ma25) / ma25 * 100 <= 5.0
 
-        score = 4; reasons = ["RSI売られすぎ(1h)", "BB下限(1h)"]
+        score = 4; reasons = ["日足↑トレンド", "RSI売られすぎ(1h)", "BB下限(1h)"]
         if macd_bottom: score += 2; reasons.append("MACD底打ち(1h)")
         if near_ma25:   score += 2; reasons.append("MA25付近(1h)")
         if rsi < 32:    score += 1; reasons.append("RSI深め")
@@ -537,6 +690,10 @@ def scan_oshime_1h(code, name):
 # ── デイトレ押し目スキャナー（5分足）────────────────────────
 def scan_oshime_5m(code, name):
     try:
+        # ★ 日足トレンド確認 → 下降トレンドは除外
+        if not check_daily_uptrend(code):
+            return None
+
         df = yf.download(code, period="5d", interval="5m", progress=False)
         if df.empty or len(df) < 50:
             return None
@@ -564,7 +721,7 @@ def scan_oshime_5m(code, name):
         macd_bottom = macd_hist > macd_hist_p
         near_ma25   = abs(price - ma25) / ma25 * 100 <= 3.0
 
-        score = 4; reasons = ["RSI売られすぎ(5m)", "BB下限(5m)"]
+        score = 4; reasons = ["日足↑トレンド", "RSI売られすぎ(5m)", "BB下限(5m)"]
         if macd_bottom: score += 2; reasons.append("MACD底打ち(5m)")
         if near_ma25:   score += 2; reasons.append("MA25付近(5m)")
 
@@ -578,6 +735,212 @@ def scan_oshime_5m(code, name):
             "エントリー": round(price, 1),
             "損切り": round(bb_lower * 0.99, 1),
             "利確目標": round(price * 1.015, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
+        return None
+
+# ── 信用売りスキャナー（日足）────────────────────────────────
+def scan_short_daily(code, name):
+    """
+    日足で下降トレンド中の戻り売りシグナルを検出。
+    条件: MA5 < MA25 < MA75 ＋ RSI高め ＋ BB上限タッチ ＋ MACD下向き
+    """
+    try:
+        df = yf.download(code, period="6mo", interval="1d", progress=False)
+        if df.empty or len(df) < 80:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        prev2 = df.iloc[-3]
+        price = float(last['Close'])
+        ma5   = float(last['MA_5'])
+        ma25  = float(last['MA_25'])
+        ma75  = float(last['MA_75'])
+        rsi         = float(last['RSI'])
+        rsi_prev    = float(prev['RSI'])
+        rsi_prev2   = float(prev2['RSI'])
+        bb_upper    = float(last['BB_Upper'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
+        vol     = float(df['Volume'].iloc[-1])
+        vol_avg = float(df['Volume'].iloc[-20:].mean())
+
+        # 下降トレンド必須
+        if not (ma5 < ma25 < ma75):
+            return None
+
+        # RSI直近5本の最大値が68以上
+        rsi_max5 = float(df['RSI'].iloc[-5:].max())
+        if rsi_max5 < 60:
+            return None
+
+        # RSIが反落中
+        rsi_falling = rsi < rsi_prev or rsi < rsi_prev2
+        if not rsi_falling:
+            return None
+
+        # BB上限タッチ（直近5本）
+        bb_touch = any(float(df['High'].iloc[i]) >= float(df['BB_Upper'].iloc[i]) * 0.99
+                       for i in range(-5, 0))
+        if not bb_touch:
+            return None
+
+        # 52週安値圏でない（下げ余地あり）
+        low52 = float(df['Low'].min())
+        if price <= low52 * 1.05:
+            return None
+
+        macd_top   = macd_hist < macd_hist_p   # MACDヒスト下向き
+        near_ma25  = abs(price - ma25) / ma25 * 100 <= 5.0
+
+        score = 0; reasons = []
+        score += 4; reasons.append("RSI高値圏")
+        score += 3; reasons.append("BB上限タッチ")
+        if rsi_falling:  score += 2; reasons.append("RSI反落中")
+        if macd_top:     score += 2; reasons.append("MACD天井打ち")
+        if near_ma25:    score += 2; reasons.append("MA25付近")
+        if vol > vol_avg * 1.5: score += 1; reasons.append("出来高急増")
+
+        grade = ("🔴 絶好の売り" if score >= 10 else "🟠 売り候補" if score >= 7 else "⬜ 参考")
+        low20 = float(df['Low'].iloc[-20:].min())
+
+        return {
+            "銘柄名": name, "コード": code, "種別": "日足売り",
+            "株価": round(price, 1), "BB上限": round(bb_upper, 1),
+            "RSI": round(rsi, 1), "RSI最大": round(rsi_max5, 1),
+            "MACDトップ": "✓" if macd_top else "－",
+            "出来高比": f"{round(vol/vol_avg,1)}x",
+            "スコア": score, "判定": grade,
+            "エントリー(売)": round(price, 1),
+            "損切り(買戻)": round(bb_upper * 1.02, 1),
+            "利確目標": round(ma25 * 0.92, 1),
+            "根拠": " / ".join(reasons),
+            "直近安値": round(low20, 1),
+        }
+    except Exception:
+        return None
+
+# ── 信用売りスキャナー（1時間足）─────────────────────────────
+def scan_short_1h(code, name):
+    """
+    日足が下降トレンドで、1時間足の戻り局面で売りエントリー。
+    """
+    try:
+        # 日足が下降トレンドであること
+        if check_daily_uptrend(code):
+            return None
+
+        df = yf.download(code, period="30d", interval="1h", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price     = float(last['Close'])
+        ma25      = float(last['MA_25'])
+        rsi       = float(last['RSI'])
+        rsi_prev  = float(prev['RSI'])
+        bb_upper  = float(last['BB_Upper'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
+
+        rsi_max = float(df['RSI'].iloc[-8:].max())
+        if rsi_max < 60:
+            return None
+        if not (rsi < rsi_prev):
+            return None
+
+        bb_touch = any(float(df['High'].iloc[i]) >= float(df['BB_Upper'].iloc[i]) * 0.99
+                       for i in range(-8, 0))
+        if not bb_touch:
+            return None
+
+        macd_top  = macd_hist < macd_hist_p
+        near_ma25 = abs(price - ma25) / ma25 * 100 <= 5.0
+
+        score = 4; reasons = ["日足↓トレンド", "RSI高値(1h)", "BB上限(1h)"]
+        if macd_top:  score += 2; reasons.append("MACD天井(1h)")
+        if near_ma25: score += 2; reasons.append("MA25付近(1h)")
+        if rsi > 68:  score += 1; reasons.append("RSI強め")
+
+        return {
+            "銘柄名": name, "コード": code, "種別": "1h売り",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最大": round(rsi_max, 1), "BB上限": round(bb_upper, 1),
+            "MACDトップ": "✓" if macd_top else "－",
+            "スコア": score, "判定": "🔴 絶好(1h)" if score >= 7 else "🟠 候補(1h)",
+            "エントリー(売)": round(price, 1),
+            "損切り(買戻)": round(bb_upper * 1.02, 1),
+            "利確目標": round(price * 0.97, 1),
+            "根拠": " / ".join(reasons),
+        }
+    except Exception:
+        return None
+
+# ── 信用売りスキャナー（5分足）───────────────────────────────
+def scan_short_5m(code, name):
+    """
+    日足が下降トレンドで、5分足の戻り局面で売りエントリー。
+    """
+    try:
+        if check_daily_uptrend(code):
+            return None
+
+        df = yf.download(code, period="5d", interval="5m", progress=False)
+        if df.empty or len(df) < 50:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df.dropna(how='all', inplace=True)
+        df = calculate_indicators(df)
+
+        last  = df.iloc[-1]
+        prev  = df.iloc[-2]
+        price     = float(last['Close'])
+        ma25      = float(last['MA_25'])
+        rsi       = float(last['RSI'])
+        rsi_prev  = float(prev['RSI'])
+        bb_upper  = float(last['BB_Upper'])
+        macd_hist   = float(last['MACD_Hist'])
+        macd_hist_p = float(prev['MACD_Hist'])
+
+        rsi_max = float(df['RSI'].iloc[-12:].max())
+        if rsi_max < 62:
+            return None
+        if not (rsi < rsi_prev):
+            return None
+
+        bb_touch = any(float(df['High'].iloc[i]) >= float(df['BB_Upper'].iloc[i]) * 0.99
+                       for i in range(-12, 0))
+        if not bb_touch:
+            return None
+
+        macd_top  = macd_hist < macd_hist_p
+        near_ma25 = abs(price - ma25) / ma25 * 100 <= 3.0
+
+        score = 4; reasons = ["日足↓トレンド", "RSI高値(5m)", "BB上限(5m)"]
+        if macd_top:  score += 2; reasons.append("MACD天井(5m)")
+        if near_ma25: score += 2; reasons.append("MA25付近(5m)")
+
+        return {
+            "銘柄名": name, "コード": code, "種別": "5m売り",
+            "株価": round(price, 1), "RSI": round(rsi, 1),
+            "RSI最大": round(rsi_max, 1), "BB上限": round(bb_upper, 1),
+            "MACDトップ": "✓" if macd_top else "－",
+            "スコア": score, "判定": "🔴 絶好(5m)" if score >= 7 else "🟠 候補(5m)",
+            "エントリー(売)": round(price, 1),
+            "損切り(買戻)": round(bb_upper * 1.01, 1),
+            "利確目標": round(price * 0.985, 1),
             "根拠": " / ".join(reasons),
         }
     except Exception:
@@ -837,9 +1200,13 @@ with tab_bulk:
             st.session_state.pop(k, None)
 
         bulk_results = {
-            "daytrade_both": [],   # 1h＋5分 両方🟢
+            "daytrade_both": [],   # 買い: 1h＋5分 両方🟢
             "daytrade_1h":   [],
             "daytrade_5m":   [],
+            "short_both":    [],   # 売り: 1h＋5分 両方🔴
+            "short_1h":      [],
+            "short_5m":      [],
+            "short_daily":   [],   # 売り: 日足
             "oshime":        [],
             "scan":          [],
             "sector_stats":  {},
@@ -853,7 +1220,7 @@ with tab_bulk:
         for i, (name, code) in enumerate(target_tickers.items()):
             stbox.info(f"⏳ {name}  [{i+1}/{total_stocks}]")
 
-            # ① デイトレ（1h・5m）
+            # ① デイトレ買い（1h・5m）
             r1h = scan_oshime_1h(code, name)
             r5m = scan_oshime_5m(code, name)
             if r1h: bulk_results["daytrade_1h"].append(r1h)
@@ -866,11 +1233,29 @@ with tab_bulk:
                     "Stoch(1時間足)": "",
                 })
 
-            # ② 押し目（日足）
+            # ② 信用売り（日足・1h・5m）
+            rs_d  = scan_short_daily(code, name)
+            rs_1h = scan_short_1h(code, name)
+            rs_5m = scan_short_5m(code, name)
+            if rs_d:  bulk_results["short_daily"].append(rs_d)
+            if rs_1h: bulk_results["short_1h"].append(rs_1h)
+            if rs_5m: bulk_results["short_5m"].append(rs_5m)
+            if rs_1h and rs_5m:
+                bulk_results["short_both"].append({
+                    "日時": time_str, "銘柄名": name, "コード": code,
+                    "エントリー(売)": rs_1h.get("エントリー(売)", 0),
+                    "損切り(買戻)":   rs_1h.get("損切り(買戻)", 0),
+                    "利確目標":       rs_1h.get("利確目標", 0),
+                    "RSI": rs_1h.get("RSI",""),
+                    "判定": "🔴 両TF売り",
+                    "根拠": rs_1h.get("根拠",""),
+                })
+
+            # ③ 押し目（日足）
             ro = scan_oshime(code, name, pb_min, pb_max, pb_near)
             if ro: bulk_results["oshime"].append(ro)
 
-            # ③ マルチTFスキャン
+            # ④ マルチTFスキャン
             row = {"銘柄名": name, "コード": code, "セクター": code_to_sector.get(code,"その他")}
             for tf_label, cfg in TF_CONFIG.items():
                 sig, rsi_v, stoch_v, adx_v, ma25_b, sig_time = scan_one(
@@ -903,10 +1288,15 @@ with tab_bulk:
         stbox.success(f"✅ {total_stocks}銘柄スキャン完了！")
 
         # session_stateに格納
-        st.session_state['bulk_results']   = bulk_results
-        st.session_state['scan_results']   = bulk_results["scan"]
-        st.session_state['sector_stats']   = bulk_results["sector_stats"]
-        st.session_state['oshime_results'] = bulk_results["oshime"]
+        st.session_state['bulk_results']    = bulk_results
+        st.session_state['scan_results']    = bulk_results["scan"]
+        st.session_state['sector_stats']    = bulk_results["sector_stats"]
+        st.session_state['oshime_results']  = bulk_results["oshime"]
+        st.session_state['short_results']   = {
+            "daily": bulk_results["short_daily"],
+            "1h":    bulk_results["short_1h"],
+            "5m":    bulk_results["short_5m"],
+        }
         st.session_state['daytrade_results'] = {
             "1h": bulk_results["daytrade_1h"],
             "5m": bulk_results["daytrade_5m"],
@@ -917,10 +1307,11 @@ with tab_bulk:
 
         # メール送信
         dt_mail    = bulk_results["daytrade_both"]
+        short_mail = bulk_results["short_both"] + [r for r in bulk_results["short_daily"] if r.get("スコア",0) >= 7]
         multi_mail = [r for r in bulk_results["scan"] if r.get("一致数",0) >= 2]
         oshi_mail  = [r for r in bulk_results["oshime"] if r.get("スコア",0) >= 7]
-        if dt_mail or multi_mail or oshi_mail:
-            ok, msg = send_buy_alert(multi_mail, oshi_mail, dt_mail)
+        if dt_mail or multi_mail or oshi_mail or short_mail:
+            ok, msg = send_buy_alert(multi_mail, oshi_mail, dt_mail, short_mail)
             if ok:
                 st.success(f"📧 メール送信完了！ {msg}")
             else:
@@ -941,20 +1332,24 @@ with tab_bulk:
     # 結果表示
     if 'bulk_results' in st.session_state:
         br = st.session_state['bulk_results']
-        dt_both = br.get("daytrade_both", [])
-        oshime  = br.get("oshime", [])
-        scan    = br.get("scan", [])
+        dt_both    = br.get("daytrade_both", [])
+        short_both = br.get("short_both", [])
+        short_d    = br.get("short_daily", [])
+        oshime     = br.get("oshime", [])
+        scan       = br.get("scan", [])
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("⚡ デイトレ両TF", f"{len(dt_both)}銘柄")
-        m2.metric("📉 押し目", f"{len(oshime)}銘柄")
-        m3.metric("🔥 マルチTF★★★", f"{len([r for r in scan if r.get('一致数')==3])}銘柄")
-        m4.metric("🔥 マルチTF★★☆", f"{len([r for r in scan if r.get('一致数')==2])}銘柄")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("⚡ デイトレ買い", f"{len(dt_both)}銘柄")
+        m2.metric("🔻 信用売り", f"{len(short_both) + len([r for r in short_d if r.get('スコア',0)>=7])}銘柄")
+        m3.metric("📉 押し目", f"{len(oshime)}銘柄")
+        m4.metric("🔥 マルチTF★★★", f"{len([r for r in scan if r.get('一致数')==3])}銘柄")
+        m5.metric("🔥 マルチTF★★☆", f"{len([r for r in scan if r.get('一致数')==2])}銘柄")
 
         st.divider()
 
+        # ⚡ デイトレ買い
         if dt_both:
-            st.markdown("### ⚡ デイトレ最強シグナル（1h＋5分 両方🟢）")
+            st.markdown("### ⚡ デイトレ買いシグナル（1h＋5分 両方🟢）")
             for r in dt_both:
                 with st.container(border=True):
                     c1, c2 = st.columns([3,1])
@@ -963,6 +1358,28 @@ with tab_bulk:
                     if c2.button("📊 チャート", key=f"bulk_dt_{r['コード']}"):
                         st.session_state['bulk_chart'] = {"code": r['コード'], "name": r['銘柄名'], "tf": "1時間足"}
 
+        # 🔻 信用売り
+        best_short = [r for r in short_both] + [r for r in short_d if "絶好" in r.get("判定","")]
+        if best_short:
+            st.divider()
+            st.markdown("### 🔻 信用売りシグナル（日足↓トレンド・戻り売り）")
+            for r in best_short:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3,1])
+                    entry  = r.get("エントリー(売)", r.get("株価",0))
+                    stop   = r.get("損切り(買戻)", 0)
+                    target = r.get("利確目標", 0)
+                    c1.markdown(f"**{r['銘柄名']}** `{r['コード']}`　{r.get('判定','🔴')}")
+                    c1.write(f"根拠: {r.get('根拠','')}  RSI: {r.get('RSI','')}")
+                    c2.metric("売り株価", f"¥{entry:,}")
+                    e1, e2, e3 = st.columns(3)
+                    e1.metric("エントリー(売)", f"¥{entry:,}")
+                    e2.metric("利確(買戻)", f"¥{target:,}")
+                    e3.metric("損切り(買戻)", f"¥{stop:,}")
+                    if c2.button("📊 チャート", key=f"bulk_sh_{r['コード']}"):
+                        st.session_state['bulk_chart'] = {"code": r['コード'], "name": r['銘柄名'], "tf": "日足"}
+
+        # 📉 押し目買い
         if oshime:
             st.divider()
             st.markdown("### 📉 押し目買い候補")
@@ -979,6 +1396,7 @@ with tab_bulk:
                                                               "entry": r['エントリー'], "stop": r['損切り'],
                                                               "target": r['利確目標'], "tf": "日足"}
 
+        # 🔥 マルチTF
         str3 = [r for r in scan if r.get("一致数")==3]
         str2 = [r for r in scan if r.get("一致数")==2]
         if str3 or str2:
