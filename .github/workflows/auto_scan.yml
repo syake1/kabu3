@@ -1,5 +1,4 @@
 name: 自動スキャン（9:30〜14:30）
-
 on:
   schedule:
     # JST = UTC+9 なので UTC時間で設定
@@ -14,7 +13,6 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     steps:
       - name: リポジトリを取得
         uses: actions/checkout@v4
@@ -26,11 +24,21 @@ jobs:
 
       - name: ライブラリインストール
         run: |
-          pip install yfinance pandas numpy
+          pip install --upgrade pip
+          pip install \
+            "yfinance>=0.2.54" \
+            "pandas>=2.0" \
+            "numpy>=1.24" \
+            gspread \
+            google-auth \
+            streamlit \
+            plotly
 
       - name: 自動スキャン実行
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
           python auto_scan.py
